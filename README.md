@@ -8,7 +8,7 @@ A fully functional, GUI-based **packet filtering firewall simulator** built from
 
 ## 📸 Screenshots
 
-> *(Add screenshots of your GUI panels here once you have them — Dashboard, Threats, Logs, etc.)*
+> <img width="1919" height="700" alt="image" src="https://github.com/user-attachments/assets/f02024a7-1a88-4c5c-884a-2ea73e9ab8d1" />
 
 ---
 
