@@ -1,0 +1,1872 @@
+SOFTWARE DESIGN SPECIFICATION (SDS)
+C++ Packet Filtering Firewall
+CSC291 — Software Engineering Concepts
+DSA Major Project Integration
+Author: Haris
+COMSATS University Islamabad — Department of Computer Science
+Version 1.0 | Based on IEEE 1016 SDS Standard
+Table of Contents
+(Update this field in Word: Right-click → Update Field)
+1. Introduction
+1.1 Purpose of this Document
+This Software Design Specification (SDS) defines the complete architectural, structural, and behavioural design of the C++ Packet Filtering Firewall. It translates every requirement stated in the SRS (v1.0) into precise design decisions, class hierarchies, data structure assignments, algorithms, and interface contracts that a developer can follow directly to write code.
+It is written to satisfy: (a) the DSA project viva/submission (demonstrating all 5 data structures), (b) the SE subject deliverable (Pressman design models, UML, CLO-3), (c) the DBMS subject (flat-file persistence with SQL-equivalent querying), and (d) the InfoSec subject (threat detection, CIA Triad implementation).
+1.2 Scope
+The system is a command-line C++ application that:
+Accepts simulated network packets as input (C++ structs, not live pcap).
+Evaluates each packet against a rule set using 5 data structures (LinkedList, BST, HashMap, Stack, Queue).
+Applies BLOCK or ALLOW decisions and logs every event to a CSV file.
+Detects anomalous traffic patterns (SYN flood, port scan).
+Exposes a full CLI for administrator management of rules, blacklists, and statistics.
+GUI is defined as a future increment and is architecturally planned (MVC) but not implemented in this version.
+1.3 Definitions and Acronyms
+Term
+Definition
+Term
+Definition
+SDS
+Software Design Specification
+SRS
+Software Requirements Specification
+DSA
+Data Structures & Algorithms
+BST
+Binary Search Tree
+CLI
+Command-Line Interface
+GUI
+Graphical User Interface (planned)
+CRUD
+Create Read Update Delete
+FIFO
+First In, First Out (Queue)
+LIFO
+Last In, First Out (Stack)
+CIDR
+Classless Inter-Domain Routing
+DoS
+Denial of Service
+ACL
+Access Control List
+CIA
+Confidentiality Integrity Availability
+NFR
+Non-Functional Requirement
+MVC
+Model-View-Controller
+DFD
+Data Flow Diagram
+ERD
+Entity Relationship Diagram
+UML
+Unified Modelling Language
+1.4 Document Organisation
+Section 2 covers the overall system architecture. Section 3 provides detailed design for every class and module. Section 4 covers all data structures with C++ pseudocode. Section 5 covers algorithms. Section 6 covers data design (file schemas). Section 7 covers the CLI interface design. Section 8 covers error handling. Section 9 is the complete C++ pseudocode skeleton. Section 10 is the test plan cross-referenced to requirements.
+2. System Architecture
+2.1 Architectural Style
+The firewall uses a hybrid architecture combining three styles:
+Pipes and Filters — packets flow through a linear pipeline of processing stages (Capture → Parse → Blacklist Check → Rule Match → Action → Log). Each stage is a self-contained filter.
+Layered Architecture — four tiers: Presentation (CLI), Application Logic (RuleEngine, TrafficMonitor), Data Access (FileLogger, ConfigManager), and Data (rules.conf, firewall.log).
+Repository Architecture — a shared in-memory repository (FirewallState) stores the active rule set, blacklist, whitelist, statistics, and queue. All modules read from and write to this shared state.
+Rationale: Pressman Ch10 defines these as standard architectural patterns. The Pipes-and-Filters pattern directly maps to how real network firewalls (iptables, FortiGate) process packets. Layered architecture ensures the future GUI can replace the CLI without touching the engine.
+2.2 Module Overview
+Six top-level modules
+1. PacketSimulator   — Generates test packets (Packet structs). Not part of production core.
+2. PacketProcessor   — Main pipeline: receives packets, coordinates all inspection stages.
+3. RuleEngine        — Owns the rule data structures (LinkedList, BST, HashMap).
+4. TrafficMonitor    — Detects anomalies: SYN flood, port scan.
+5. FileLogger        — Writes CSV log entries and reads them back for queries.
+6. AdminCLI          — Parses and dispatches all administrator commands.
+2.3 Complete System Architecture Diagram (Text UML — Component Diagram)
+The following describes the Component Diagram (SE Lecture 15):
+┌──────────────────────────────────────────────────────────────────┐
+│                        C++ Firewall Application                   │
+│                                                                    │
+│  ┌─────────────┐   Packet    ┌──────────────────────────────────┐ │
+│  │PacketSim-   │──────────▶ │       PacketProcessor             │ │
+│  │ulator       │            │  1. Parse header                  │ │
+│  └─────────────┘            │  2. Check whitelist (HashMap O(1))│ │
+│                             │  3. Check blacklist (HashMap O(1))│ │
+│  ┌─────────────┐            │  4. Match rules    (BST O(log n)) │ │
+│  │  AdminCLI   │            │  5. Apply default policy          │ │
+│  │  (commands) │            │  6. Log decision                  │ │
+│  └──────┬──────┘            └─────────────┬────────────────────┘ │
+│         │                                  │                      │
+│         ▼                                  ▼                      │
+│  ┌──────────────────┐    ┌──────────────────────────────────┐    │
+│  │   RuleEngine     │    │         FirewallState            │    │
+│  │ - LinkedList     │◀──▶│  (shared in-memory repository)  │    │
+│  │ - BST            │    │  - activeRules (LinkedList)      │    │
+│  │ - HashMap        │    │  - ruleBST (BST)                 │    │
+│  └──────────────────┘    │  - blacklist (HashMap)           │    │
+│                          │  - whitelist (HashMap)           │    │
+│  ┌──────────────────┐    │  - packetQueue (Queue)           │    │
+│  │ TrafficMonitor   │◀──▶│  - historyStack (Stack)         │    │
+│  │ - SYN counter    │    │  - stats (counters)              │    │
+│  │ - PortScan det.  │    └──────────────────────────────────┘    │
+│  └──────────────────┘                   │                        │
+│                                          ▼                        │
+│                          ┌──────────────────────────────────┐    │
+│                          │         FileLogger               │    │
+│                          │  - firewall.log (CSV append)     │    │
+│                          │  - rules.conf (text CRUD)        │    │
+│                          └──────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────┘
+2.4 MVC Architecture (for future GUI — SE Lecture 12)
+MVC Layer
+Component
+Responsibility
+C++ Mapping
+Model
+FirewallState, RuleEngine, TrafficMonitor
+All data and business logic
+Core engine classes
+View
+AdminCLI (current), GUI Dashboard (future)
+Present data to user
+CLI output / future Qt GUI
+Controller
+CommandDispatcher
+Parse input, call Model, update View
+AdminCLI::dispatch()
+3. Detailed Class Design
+This section specifies every class in the system. For each class: attributes, methods, responsibilities, and relationships are defined. This directly implements the UML Class Diagram (SE Lecture 14).
+3.1 Class: Packet
+Represents one network packet. This is the primary data object flowing through the pipeline.
+Attribute
+Type
+Description
+Example value
+sourceIP
+string
+Sender's IPv4 address in dotted-decimal
+192.168.1.100
+destIP
+string
+Destination IPv4 address
+10.0.0.1
+destPort
+int
+Destination port number (0–65535)
+22
+protocol
+enum Protocol
+TCP / UDP / ICMP
+TCP
+direction
+enum Direction
+INBOUND / OUTBOUND
+INBOUND
+isSYN
+bool
+True if TCP SYN flag is set
+true
+payloadSize
+int
+Payload bytes (header inspection only)
+1460
+timestamp
+string
+ISO 8601 arrival time
+2025-06-01T10:30:00Z
+packetID
+int
+Auto-incremented unique identifier
+1042
+Methods:
+string toString() — returns human-readable packet summary for logging.
+bool isValid() — returns false if IP format is invalid or port out of range.
+3.2 Class: Rule
+Represents one firewall rule stored in the rule set.
+Attribute
+Type
+Description
+Default
+ruleID
+int
+Unique auto-incremented identifier
+Auto
+priority
+int
+Lower number = higher priority
+100
+sourceIP
+string
+Source IP to match. "*" means any
+*
+destPort
+int
+Destination port. -1 means any port
+-1
+protocol
+enum Protocol
+TCP / UDP / ICMP / ANY
+ANY
+direction
+enum Direction
+INBOUND / OUTBOUND / BOTH
+BOTH
+action
+enum Action
+ALLOW / BLOCK / LOG_ONLY
+BLOCK
+description
+string
+Human-readable rule label
+"Block Telnet"
+enabled
+bool
+Rule active or disabled
+true
+hitCount
+int
+Number of times this rule was matched
+0
+Methods:
+bool matches(const Packet& p) — returns true if the packet matches all non-wildcard fields of this rule.
+string toConfigLine() — serialises the rule to one line of rules.conf format.
+static Rule fromConfigLine(const string& line) — parses one config line into a Rule.
+string toString() — returns formatted string for list-rules display.
+3.3 Class: RuleNode (BST node and LinkedList node)
+Internal node used by both the BST and the LinkedList. Avoids duplicating the Rule object.
+Attribute
+Type
+Description
+Notes
+rule
+Rule
+The actual rule data
+Owned by this node
+next
+RuleNode*
+Next pointer (LinkedList use)
+nullptr = end of list
+left
+RuleNode*
+Left child (BST use)
+nullptr = no left child
+right
+RuleNode*
+Right child (BST use)
+nullptr = no right child
+3.4 Class: LinkedList (Rule storage — ordered traversal)
+Stores all rules in insertion order. Used for: listing rules, serialising to file, iterating all rules in priority order after sorting.
+Attributes:
+RuleNode* head — pointer to first node.
+int size — current number of rules.
+Methods:
+void insert(Rule r) — inserts new rule at tail (O(n) traverse to tail, or maintain tail pointer for O(1)).
+void insertSorted(Rule r) — inserts maintaining priority order (O(n) traversal).
+bool remove(int ruleID) — finds and unlinks node by ruleID (O(n)).
+Rule* find(int ruleID) — returns pointer to Rule with matching ID, nullptr if not found.
+void printAll() — iterates and prints every rule via Rule::toString().
+int getSize() — returns size.
+void clear() — frees all nodes.
+Time complexities: insert O(1) with tail pointer, remove O(n), find O(n), printAll O(n).
+3.5 Class: BST (Rule lookup — priority-keyed)
+Binary Search Tree keyed on Rule::priority. Provides O(log n) lookup of the highest-priority matching rule. This is the critical performance path for every packet decision.
+Attributes:
+RuleNode* root — pointer to BST root.
+Methods:
+void insert(Rule r) — inserts by priority key. If priority already exists, uses ruleID as tie-breaker.
+Rule* findBestMatch(const Packet& p) — in-order traversal from lowest priority number (highest priority), returns first Rule that matches the packet. O(log n) in a balanced tree.
+bool remove(int ruleID) — finds and removes node, rebalancing with in-order successor. O(log n).
+void inOrder(vector<Rule>& out) — fills vector with rules in priority order (for listing).
+int height() — returns tree height (useful for performance analysis in DSA viva).
+bool isBalanced() — checks if tree is balanced (AVL property, for analysis).
+Design note: In the worst case (rules inserted in sorted priority order), the BST degenerates to O(n). For the viva, discuss this trade-off and mention AVL trees as the self-balancing extension.
+3.6 Class: HashMap (IP blacklist, whitelist, SYN counters)
+Hash table mapping string keys (IP addresses) to boolean (blacklist/whitelist) or integer (SYN counter). O(1) average lookup.
+Design decisions:
+Hash function: djb2 (Dan Bernstein) — simple, fast, good distribution for IP strings.
+Collision resolution: Separate chaining (each bucket is a linked list of entries).
+Load factor threshold: 0.75. When exceeded, rehash to 2x bucket count.
+Bucket count: Start with 1024 (power of 2 for fast modulo with bitwise AND).
+Attributes:
+vector<list<pair<string,int>>> buckets — bucket array of chained pairs.
+int count — current number of entries.
+int bucketCount — current number of buckets.
+Methods:
+void insert(const string& key, int value=1) — hashes key, inserts or updates in bucket chain.
+int get(const string& key) — returns value for key, -1 if not found.
+bool contains(const string& key) — returns true if key present.
+void remove(const string& key) — removes entry from chain.
+void increment(const string& key) — increments integer value for key (used for SYN counters).
+vector<pair<string,int>> topN(int n) — returns N entries with highest values (for top blocked IPs).
+float loadFactor() — returns count / bucketCount.
+void rehash() — doubles bucket count and re-inserts all entries.
+int hash(const string& key) — private: djb2 hash function.
+3.7 Class: Stack (Packet history — LIFO)
+Stores the N most recent processed packets for instant recall via show-history. Implemented as a fixed-capacity circular array.
+Attributes:
+Packet items[MAX_HISTORY] — circular array, MAX_HISTORY = 100 by default.
+int top — index of most recent item.
+int count — number of items currently stored.
+int capacity — max items (configurable).
+Methods:
+void push(const Packet& p) — adds packet to top. If full, overwrites oldest (circular).
+Packet pop() — removes and returns top item. Throws if empty.
+Packet peek() — returns top item without removing.
+bool isEmpty() — true if count == 0.
+bool isFull() — true if count == capacity.
+void printTop(int n) — prints top n items to stdout.
+3.8 Class: Queue (Packet buffer — FIFO)
+Buffers incoming packets when processing rate is temporarily exceeded. FIFO ordering ensures packets are processed in arrival order.
+Attributes:
+Packet items[MAX_QUEUE] — circular array, MAX_QUEUE = 1000 by default.
+int front, rear — indices for dequeue/enqueue positions.
+int count — current number of packets in queue.
+int capacity — configurable max capacity.
+int overflowCount — number of packets dropped due to full queue.
+Methods:
+bool enqueue(const Packet& p) — adds packet to rear. Returns false (and increments overflowCount) if full.
+Packet dequeue() — removes and returns front packet. Throws if empty.
+bool isEmpty() — true if count == 0.
+bool isFull() — true if count == capacity.
+int getCount() — returns current queue depth.
+int getOverflowCount() — returns number of dropped packets.
+3.9 Class: RuleEngine
+The central coordination class. Owns all three rule data structures and provides the single interface that PacketProcessor calls for every packet. This is the most important class in the system.
+Attributes:
+LinkedList ruleList — ordered list of all rules (for display and serialisation).
+BST ruleBST — priority-indexed tree for fast packet matching.
+HashMap blacklist — IPs that are always blocked.
+HashMap whitelist — IPs that always bypass block rules.
+int nextRuleID — auto-incrementing rule ID counter.
+Action defaultPolicy — DEFAULT_DENY or DEFAULT_ALLOW.
+Methods:
+Action evaluate(const Packet& p) — the core method. Returns BLOCK or ALLOW for a packet. Algorithm described in Section 5.1.
+bool addRule(Rule r) — adds to both ruleList and ruleBST. Assigns ruleID and returns true on success.
+bool removeRule(int ruleID) — removes from both structures. Returns false if not found.
+bool updateRule(int ruleID, Action newAction) — updates action in both structures.
+void listRules() — prints all rules via ruleList.printAll().
+void addToBlacklist(const string& ip) — inserts into blacklist HashMap.
+void addToWhitelist(const string& ip) — inserts into whitelist HashMap.
+void removeFromBlacklist(const string& ip)
+void removeFromWhitelist(const string& ip)
+void setDefaultPolicy(Action policy)
+void saveToFile(const string& path) — serialises all rules to rules.conf.
+void loadFromFile(const string& path) — loads rules from file, rebuilds all structures.
+3.10 Class: TrafficMonitor
+Watches for anomalous traffic patterns. Runs as part of the packet pipeline.
+Attributes:
+HashMap synCounters — maps sourceIP to SYN packet count in current window.
+HashMap portScanSets — maps sourceIP to count of distinct destination ports.
+int synThreshold — SYN packets/sec to trigger flood detection (default 100).
+int portScanThreshold — distinct ports/10 sec to trigger scan detection (default 20).
+time_t windowStart — start of current monitoring window.
+int windowSeconds — duration of monitoring window (default 10 sec).
+Methods:
+ThreatType inspect(const Packet& p) — checks for SYN flood and port scan. Returns NONE, SYN_FLOOD, or PORT_SCAN.
+void resetWindow() — clears counters at end of time window.
+bool isSYNFlood(const string& ip) — returns true if IP exceeded SYN threshold.
+bool isPortScan(const string& ip) — returns true if IP exceeded port diversity threshold.
+3.11 Class: FileLogger
+Handles all file I/O: writing log entries, reading for queries, saving and loading rule config.
+Attributes:
+string logFilePath — path to firewall.log CSV file (default "firewall.log").
+string configFilePath — path to rules.conf (default "rules.conf").
+ofstream logStream — open file stream (kept open for performance; closed on destructor).
+Methods:
+void logEvent(const Packet& p, Action action, int matchedRuleID=-1) — appends one CSV line.
+void logThreat(const string& ip, ThreatType t) — appends THREAT event line.
+vector<string> queryByIP(const string& ip) — reads log, returns all lines matching source IP.
+vector<string> queryByAction(const string& action) — returns all lines with matching action.
+vector<string> queryLastN(int minutes) — returns lines from last N minutes.
+void saveRules(const LinkedList& rules) — writes all rules to rules.conf.
+vector<Rule> loadRules() — reads and parses rules.conf, returns Rule vector.
+3.12 Class: PacketProcessor
+The main processing pipeline. Orchestrates the complete packet evaluation flow.
+Attributes:
+RuleEngine& engine — reference to the shared RuleEngine.
+TrafficMonitor& monitor — reference to the TrafficMonitor.
+FileLogger& logger — reference to the FileLogger.
+Stack& history — reference to the history Stack.
+Queue& packetQueue — reference to the packet Queue.
+FirewallStats& stats — reference to the statistics counter struct.
+Methods:
+void process(const Packet& p) — full pipeline for one packet. See algorithm Section 5.2.
+void drainQueue() — processes all packets currently in the Queue.
+3.13 Struct: FirewallStats
+Plain data struct holding all runtime statistics counters.
+int totalProcessed, totalBlocked, totalAllowed, totalLogged
+int synFloodsDetected, portScansDetected
+int queueOverflows
+string startTime — ISO 8601 startup timestamp
+void print() — formatted statistics display
+3.14 Class: AdminCLI
+Parses administrator input and dispatches to the appropriate engine methods. Implements the Controller in the MVC pattern.
+Attributes:
+RuleEngine& engine — injection reference.
+PacketProcessor& processor — injection reference.
+FirewallStats& stats — injection reference.
+FileLogger& logger — injection reference.
+bool running — loop control flag.
+Methods:
+void run() — main input loop: print prompt, read line, dispatch command.
+void dispatch(const string& input) — tokenises input, routes to handler.
+void cmdAddRule(vector<string> args)
+void cmdDelRule(vector<string> args)
+void cmdListRules()
+void cmdBlockIP(vector<string> args)
+void cmdAllowIP(vector<string> args)
+void cmdSetPolicy(vector<string> args)
+void cmdShowStats()
+void cmdShowHistory(vector<string> args)
+void cmdQuery(vector<string> args)
+void cmdSave()
+void cmdLoad()
+void cmdHelp()
+void cmdExit()
+3.15 Class: MongoLogger (MongoDB Persistence)
+Implements the ILogger interface (MAIN-2, SRS Section 5.5) providing MongoDB-backed storage for all packet decisions, rules, blacklist/whitelist entries, and threat events. When MongoDB is available, MongoLogger is injected into PacketProcessor alongside FileLogger (dual-write mode).
+Attribute
+Type / Description
+mongoURI
+string — MongoDB connection URI (default: mongodb://localhost:27017)
+dbName
+string — Database name (default: firewall_db)
+client
+mongocxx::client — pooled client instance
+db
+mongocxx::database — handle to firewall_db
+rulesCol
+mongocxx::collection — rules collection handle
+trafficlogCol
+mongocxx::collection — trafficlog collection handle
+blacklistCol
+mongocxx::collection — blacklist collection handle
+whitelistCol
+mongocxx::collection — whitelist collection handle
+threatsCol
+mongocxx::collection — threats collection handle
+connected
+bool — true if MongoDB connection is active
+writeFailures
+int — count of failed MongoDB write operations
+Methods:
+bool connect(const string uri) — initialises mongocxx::instance, creates client, verifies ping. Returns false on failure.
+void disconnect() — closes client gracefully on exit.
+void logEvent(const Packet p, Action a, int ruleID) — inserts one document into trafficlog. Implements ILogger.
+void logThreat(const string ip, ThreatType t) — inserts one document into threats collection.
+void saveRule(const Rule r) — upserts one document into rules collection.
+void deleteRule(int ruleID) — deletes document {ruleID: N} from rules collection.
+void updateRule(int ruleID, Action a, bool enabled) — $set action and enabled fields.
+vector loadRules() — find({}) on rules, reconstruct Rule objects, sort by priority.
+void saveBlacklistEntry(const string ip, const string reason) — upserts into blacklist collection.
+void deleteBlacklistEntry(const string ip) — delete_one({ip: ip}) from blacklist.
+vector loadBlacklist() — returns all IPs from blacklist collection.
+void saveWhitelistEntry(const string ip) — upserts into whitelist collection.
+void deleteWhitelistEntry(const string ip) — delete_one({ip: ip}) from whitelist.
+vector loadWhitelist() — returns all IPs from whitelist collection.
+vector queryByIP(const string ip) — find({sourceIP: ip}) on trafficlog.
+vector queryByAction(const string action) — find({action: action}) on trafficlog.
+vector queryLastN(int minutes) — find({timestamp: {$gte: cutoff}}) on trafficlog.
+vector topNBlockedIPs(int n) — aggregation pipeline: $match BLOCK, $group by sourceIP, $sort desc, $limit n.
+bool isConnected() const — returns connected flag.
+bool validateIP(const string& ip) — returns false for malformed IPs; prints error.
+bool validatePort(const string& port) — returns false if not integer 0-65535.
+4. Data Structure Design (Complete Reference)
+This section is the primary DSA documentation. Each data structure is fully specified with: role in the firewall, C++ implementation notes, complexity analysis, and DSA viva talking points.
+4.1 LinkedList — Rule Storage and Ordered Traversal
+LinkedList Quick Reference
+Purpose: Store all rules in order. Used for: listing rules, saving to file, loading from file.
+Node type: RuleNode (contains Rule, next*, left*, right* — shared with BST)
+Key operation: insertSorted() maintains priority order during bulk load.
+Complexity: Insert O(1) tail / O(n) sorted | Remove O(n) | Find O(n) | Traverse O(n)
+C++ pseudocode — Node definition:
+struct RuleNode {
+    Rule rule;
+    RuleNode* next  = nullptr;   // LinkedList link
+    RuleNode* left  = nullptr;   // BST left child
+    RuleNode* right = nullptr;   // BST right child
+};
+C++ pseudocode — insert():
+void LinkedList::insert(Rule r) {
+    RuleNode* node = new RuleNode{r};
+    if (!head) { head = tail = node; }
+    else        { tail->next = node; tail = node; }
+    size++;
+}
+C++ pseudocode — remove():
+bool LinkedList::remove(int ruleID) {
+    RuleNode* prev = nullptr;
+    RuleNode* curr = head;
+    while (curr) {
+        if (curr->rule.ruleID == ruleID) {
+            if (prev) prev->next = curr->next;
+            else      head = curr->next;
+            if (curr == tail) tail = prev;
+            delete curr; size--; return true;
+        }
+        prev = curr; curr = curr->next;
+    }
+    return false;  // not found
+}
+4.2 BST — Priority-Keyed Rule Lookup
+BST Quick Reference
+Purpose: O(log n) lookup of the highest-priority matching rule for each packet.
+Key: Rule::priority (integer, lower = higher priority).
+Traversal: In-order traversal visits rules in priority order (lowest number first).
+Complexity: Insert O(log n) avg | Search O(log n) avg | Remove O(log n) avg | Worst O(n) sorted input
+Viva point: Discuss degenerate case (rules inserted in sorted priority order → linked list).
+C++ pseudocode — insert():
+void BST::insert(RuleNode* &node, Rule r) {
+    if (!node) { node = new RuleNode{r}; return; }
+    if (r.priority < node->rule.priority)
+        insert(node->left, r);
+    else if (r.priority > node->rule.priority)
+        insert(node->right, r);
+    else // same priority: use ruleID as tie-breaker
+        if (r.ruleID < node->rule.ruleID)
+            insert(node->left, r);
+        else
+            insert(node->right, r);
+}
+C++ pseudocode — findBestMatch() (in-order, returns first match):
+Rule* BST::findBestMatch(RuleNode* node, const Packet& p) {
+    if (!node) return nullptr;
+    // Check left subtree first (higher priority = lower number)
+    Rule* found = findBestMatch(node->left, p);
+    if (found) return found;
+    // Check this node
+    if (node->rule.matches(p)) return &node->rule;
+    // Check right subtree (lower priority)
+    return findBestMatch(node->right, p);
+}
+C++ pseudocode — remove() (in-order successor method):
+RuleNode* BST::removeNode(RuleNode* node, int ruleID) {
+    if (!node) return nullptr;
+    if (ruleID < node->rule.ruleID)
+        node->left  = removeNode(node->left,  ruleID);
+    else if (ruleID > node->rule.ruleID)
+        node->right = removeNode(node->right, ruleID);
+    else {
+        if (!node->left)  { RuleNode* r = node->right; delete node; return r; }
+        if (!node->right) { RuleNode* l = node->left;  delete node; return l; }
+        // Two children: replace with in-order successor
+        RuleNode* succ = minNode(node->right);
+        node->rule = succ->rule;
+        node->right = removeNode(node->right, succ->rule.ruleID);
+    }
+    return node;
+}
+4.3 HashMap — IP Blacklist / Whitelist / SYN Counters
+HashMap Quick Reference
+Purpose: O(1) average lookup for IP-keyed data (blacklist, whitelist, SYN flood counters).
+Hash function: djb2 — hash = 5381; for each char: hash = hash*33 ^ char;
+Collision resolution: Separate chaining (each bucket = linked list of pairs).
+Load factor threshold: 0.75 — triggers rehash to 2x bucket count.
+Initial bucket count: 1024 (power of 2 for fast modulo).
+Complexity: Insert O(1) avg | Get O(1) avg | Remove O(1) avg | Worst O(n) all same bucket
+C++ pseudocode — hash function:
+int HashMap::hash(const string& key) {
+    unsigned long h = 5381;
+    for (char c : key)
+        h = ((h << 5) + h) ^ (unsigned char)c;  // h*33 ^ c
+    return (int)(h % bucketCount);
+}
+C++ pseudocode — insert():
+void HashMap::insert(const string& key, int value) {
+    if (loadFactor() > 0.75) rehash();
+    int idx = hash(key);
+    for (auto& pair : buckets[idx])
+        if (pair.first == key) { pair.second = value; return; }
+    buckets[idx].push_back({key, value});
+    count++;
+}
+C++ pseudocode — rehash():
+void HashMap::rehash() {
+    int newSize = bucketCount * 2;
+    vector<list<pair<string,int>>> newBuckets(newSize);
+    for (auto& bucket : buckets)
+        for (auto& pair : bucket) {
+            unsigned long h = 5381;
+            for (char c : pair.first) h = ((h<<5)+h)^(unsigned char)c;
+            newBuckets[h % newSize].push_back(pair);
+        }
+    buckets = move(newBuckets);
+    bucketCount = newSize;
+}
+4.4 Stack — Packet History (LIFO)
+Stack Quick Reference
+Purpose: Store last N processed packets. LIFO: most recent shown first.
+Implementation: Fixed-capacity circular array (avoids dynamic allocation overhead).
+Capacity: Configurable, default MAX_HISTORY = 100.
+Complexity: push O(1) | pop O(1) | peek O(1) | printTop(n) O(n)
+C++ pseudocode — push() with circular overwrite:
+void Stack::push(const Packet& p) {
+    top = (top + 1) % capacity;
+    items[top] = p;
+    if (count < capacity) count++;
+}
+C++ pseudocode — printTop():
+void Stack::printTop(int n) {
+    int limit = min(n, count);
+    int idx = top;
+    for (int i = 0; i < limit; i++) {
+        cout << items[idx].toString() << endl;
+        idx = (idx - 1 + capacity) % capacity;
+    }
+}
+4.5 Queue — Packet Buffer (FIFO)
+Queue Quick Reference
+Purpose: Buffer incoming packets when processing is temporarily slower than arrival.
+Implementation: Fixed-capacity circular array.
+Capacity: Configurable, default MAX_QUEUE = 1000.
+Overflow policy: Drop packet silently, increment overflowCount.
+Complexity: enqueue O(1) | dequeue O(1) | isEmpty O(1) | isFull O(1)
+C++ pseudocode — enqueue():
+bool Queue::enqueue(const Packet& p) {
+    if (isFull()) { overflowCount++; return false; }
+    rear = (rear + 1) % capacity;
+    items[rear] = p;
+    count++;
+    return true;
+}
+C++ pseudocode — dequeue():
+Packet Queue::dequeue() {
+    if (isEmpty()) throw runtime_error("Queue underflow");
+    Packet p = items[front];
+    front = (front + 1) % capacity;
+    count--;
+    return p;
+}
+4.6 Data Structure Complexity Summary
+Structure
+Operation
+Average Case
+Worst Case
+HashMap
+Insert / Get / Remove
+O(1)
+O(n) — all keys collide
+BST
+Insert / Search / Remove
+O(log n)
+O(n) — degenerate tree
+LinkedList
+Insert tail / Remove
+O(1) / O(n)
+O(n)
+Stack
+Push / Pop / Peek
+O(1)
+O(1)
+Queue
+Enqueue / Dequeue
+O(1)
+O(1)
+5. Algorithm Design
+5.1 Core Algorithm: RuleEngine::evaluate()
+This is the most critical algorithm in the system — every single packet runs through it. It must be both correct and fast.
+Pseudocode:
+Action RuleEngine::evaluate(const Packet& p) {
+    // Step 1: Whitelist check — O(1)
+    if (whitelist.contains(p.sourceIP)) {
+        logEvent(p, ALLOW, WHITELIST_MATCH);
+        return ALLOW;
+    }
+    // Step 2: Blacklist check — O(1)
+    if (blacklist.contains(p.sourceIP)) {
+        logEvent(p, BLOCK, BLACKLIST_MATCH);
+        return BLOCK;
+    }
+    // Step 3: Rule match — O(log n)
+    Rule* matched = ruleBST.findBestMatch(p);
+    if (matched) {
+        matched->hitCount++;
+        logEvent(p, matched->action, matched->ruleID);
+        return matched->action;
+    }
+    // Step 4: Default policy
+    logEvent(p, defaultPolicy, DEFAULT_POLICY);
+    return defaultPolicy;
+}
+Total worst-case: O(1) + O(1) + O(log n) = O(log n) per packet.
+5.2 Packet Processing Pipeline: PacketProcessor::process()
+Pseudocode:
+void PacketProcessor::process(const Packet& p) {
+    stats.totalProcessed++;
+    // Stage 1: Validate packet
+    if (!p.isValid()) {
+        logger.logEvent(p, BLOCK, INVALID_PACKET);
+        return;
+    }
+    // Stage 2: Enqueue for orderly processing
+    if (!packetQueue.enqueue(p)) {
+        logger.logEvent(p, BLOCK, QUEUE_OVERFLOW);
+        stats.queueOverflows++;
+        return;
+    }
+    // Stage 3: Dequeue and inspect
+    Packet current = packetQueue.dequeue();
+    // Stage 4: Threat detection
+    ThreatType threat = monitor.inspect(current);
+    if (threat != NONE) {
+        engine.addToBlacklist(current.sourceIP);
+        logger.logThreat(current.sourceIP, threat);
+        if (threat == SYN_FLOOD)  stats.synFloodsDetected++;
+        if (threat == PORT_SCAN)  stats.portScansDetected++;
+    }
+    // Stage 5: Evaluate rule
+    Action decision = engine.evaluate(current);
+    // Stage 6: Update counters
+    if (decision == BLOCK) stats.totalBlocked++;
+    else                   stats.totalAllowed++;
+    // Stage 7: Push to history stack
+    history.push(current);
+}
+5.3 Algorithm: Rule Matching — Rule::matches()
+bool Rule::matches(const Packet& p) const {
+    // Wildcard check for each field
+    if (sourceIP != "*" && sourceIP != p.sourceIP) return false;
+    if (destPort  != -1  && destPort  != p.destPort)  return false;
+    if (protocol  != ANY && protocol  != p.protocol)  return false;
+    if (direction != BOTH && direction != p.direction) return false;
+    if (!enabled) return false;
+    return true;
+}
+5.4 Algorithm: SYN Flood Detection — TrafficMonitor::inspect()
+ThreatType TrafficMonitor::inspect(const Packet& p) {
+    // Refresh window if expired
+    time_t now = time(nullptr);
+    if (difftime(now, windowStart) > windowSeconds) resetWindow();
+    // SYN flood detection
+    if (p.protocol == TCP && p.isSYN) {
+        synCounters.increment(p.sourceIP);
+        if (synCounters.get(p.sourceIP) > synThreshold)
+            return SYN_FLOOD;
+    }
+    // Port scan detection
+    portScanSets.increment(p.sourceIP + ":" + to_string(p.destPort));
+    // Count distinct ports for this IP
+    // (Simplified: track combined key, compare vs threshold * avg_port_repeat)
+    int distinctPorts = countDistinctPorts(p.sourceIP);
+    if (distinctPorts > portScanThreshold) return PORT_SCAN;
+    return NONE;
+}
+5.5 Algorithm: IP Address Validation
+5.6  Algorithm: HashMap::topN(int n)
+Returns the N entries with the highest integer values. Used by show-stats to display top N blocked IPs or most-hit rules.
+Pseudocode:
+vector<pair<string,int>> HashMap::topN(int n):
+  // Use a min-heap of size n to track top entries
+  minHeap = priority_queue(size=n, comparator=by_value_ascending)
+  for each bucket b in table[0..capacity-1]:
+    for each Entry e in b.chain:
+      if e.key is not empty:
+        if minHeap.size() < n:
+          minHeap.push({e.key, e.value})
+        else if e.value > minHeap.top().value:
+          minHeap.pop()
+          minHeap.push({e.key, e.value})
+  result = extract all entries from minHeap, sorted descending by value
+  return result
+Time Complexity: O(N log n) where N = total entries, n = requested top-N. Space: O(n). Degenerate case: if all N entries have same value, result is arbitrary n of them — acceptable for statistics display.
+5.7  Algorithm: BST::findInOrderSuccessor(BSTNode* node)
+Finds the in-order successor of a BST node — the node with the next-smallest priority value. Required by removeRule() when deleting a node that has two children.
+Pseudocode:
+BSTNode* BST::findInOrderSuccessor(BSTNode* node):
+  // In-order successor is the leftmost node in the right subtree
+  if node.right == nullptr: return nullptr  // no successor
+  current = node.right
+  while current.left != nullptr:
+    current = current.left
+  return current  // smallest in right subtree
+// Used inside BST::remove(int priority):
+// Case: node has two children
+  successor = findInOrderSuccessor(node)
+  node.priority = successor.priority    // copy successor data up
+  node.rulePtr  = successor.rulePtr
+  removeNode(node.right, successor.priority) // delete successor
+Time Complexity: O(h) where h = tree height. O(log n) average, O(n) worst case (degenerate BST). Pre-condition: node has a right child. Post-condition: BST property maintained after deletion.
+5.8  Algorithm: TrafficMonitor::countDistinctPorts(string sourceIP)
+Returns the number of distinct destination ports that sourceIP has sent packets to in the current monitoring window. Used by port scan detection in TrafficMonitor::inspect().
+Pseudocode:
+int TrafficMonitor::countDistinctPorts(string sourceIP):
+  // portScanSets: HashMap<string, unordered_set<int>>
+  // Each entry maps sourceIP -> set of destPorts seen
+  if portScanSets.contains(sourceIP) == false:
+    return 0
+  return portScanSets.get(sourceIP).size()
+// Called from inspect() after each packet:
+  portScanSets[p.sourceIP].insert(p.destPort)   // O(1) set insert
+  distinctCount = countDistinctPorts(p.sourceIP) // O(1) set size
+  if distinctCount > portScanThreshold:
+    declarePORTSCAN(p.sourceIP)
+Time Complexity: O(1) for insert and count (unordered_set). Space: O(U * D) where U = unique source IPs, D = avg distinct ports per IP. Degenerate case: single IP probing all 65,535 ports — set grows to 65,535 entries (< 1MB). Acceptable.
+5.9  Algorithm: Stack::push() with Circular Overwrite
+The history Stack has a fixed capacity. When full, the oldest entry is overwritten (circular buffer behaviour). This is an important design decision distinct from a standard stack.
+Pseudocode:
+void Stack::push(Packet p):
+  if size < capacity:
+    data[top] = p
+    top = (top + 1) % capacity   // circular increment
+    size++
+  else:
+    // Overwrite oldest entry (circular)
+    data[top] = p                // top points to oldest slot
+    top = (top + 1) % capacity
+    // size stays at capacity (oldest entry lost)
+Time Complexity: O(1) push always. Space: O(capacity) fixed. Design rationale: Fixed memory footprint is critical for a long-running network tool. A growing stack would eventually exhaust memory. Circular overwrite is the standard pattern for bounded history buffers (used in real tools like tcpdump ring buffers).
+5.11  Algorithm: MongoLogger::logEvent()
+Inserts one BSON document into the trafficlog collection for every packet decision. Designed for sub-5ms execution on a local MongoDB instance.
+Pseudocode:
+void MongoLogger::logEvent(const Packet p, Action a, int ruleID) {
+  if (!connected) { FileLogger::logEvent(p, a, ruleID); return; }  // fallback
+  try {
+    auto doc = bsoncxx::builder::stream::document{}
+      << "timestamp"     << p.timestamp
+      << "packetID"      << p.packetID
+      << "sourceIP"      << p.sourceIP
+      << "destIP"        << p.destIP
+      << "destPort"      << p.destPort
+      << "protocol"      << protocolToStr(p.protocol)
+      << "direction"     << directionToStr(p.direction)
+      << "action"        << actionToStr(a)
+      << "matchedRuleID" << to_string(ruleID)
+      << "threatType"    << "NONE"
+      << bsoncxx::builder::stream::finalize;
+    trafficlogCol.insert_one(doc.view());
+  } catch (const mongocxx::exception e) {
+    cerr << "MongoDB write failed: " << e.what() << endl;
+    writeFailures++;
+  }
+}
+Time complexity: O(1) single document insert into indexed collection. Network latency: less than 5ms on localhost.
+5.12  Algorithm: MongoLogger::topNBlockedIPs()
+Uses MongoDB aggregation pipeline to compute top-N blocked source IPs. Replaces HashMap::topN() computation for persistent log data.
+Pseudocode:
+vector MongoLogger::topNBlockedIPs(int n) {
+  mongocxx::pipeline p;
+  p.match(doc{} << "action" << "BLOCK");
+  p.group(doc{} << "_id" << "$sourceIP" << "count" << doc{} << "$sum" << 1);
+  p.sort(doc{} << "count" << -1);
+  p.limit(n);
+  auto cursor = trafficlogCol.aggregate(p);
+  vector results;
+  for (auto doc : cursor)
+    results.push_back({doc["_id"].get_string(), doc["count"].get_int32()});
+  return results;
+}
+Equivalent SQL: SELECT sourceIP, COUNT(*) FROM trafficlog WHERE action=BLOCK GROUP BY sourceIP ORDER BY COUNT(*) DESC LIMIT n;
+5.10  Degenerate Case Analysis
+The following table documents worst-case scenarios for each DSA structure and the system-level mitigation.
+Structure
+Degenerate Case
+Complexity & Mitigation
+BST
+All rules inserted in ascending priority order — tree becomes a right-skewed linked list
+O(n) per lookup. Mitigation: Insert rules in mixed order; document AVL tree as future enhancement.
+HashMap (blacklist)
+All IP strings hash to same bucket — single long chain
+O(n) per lookup. Mitigation: djb2 distributes IP strings uniformly; load factor cap at 0.75 triggers rehash.
+Stack (history)
+10,000 rapid packets overflow cap-100 Stack — oldest 9,900 overwritten
+O(1) always. By design. Increase MAX_HISTORY before high-volume tests; document as known limitation.
+Queue (buffer)
+Sustained burst fills cap-1,000 Queue — every new packet overflows
+O(1) always. overflowCount tracked in FirewallStats. Alert admin if overflowCount exceeds threshold.
+LinkedList (rules)
+1,000 rules searched linearly for a non-existent ruleID in find()
+O(n). BST used for packet evaluation to avoid this. LinkedList traversal only for admin commands (infrequent).
+bool AdminCLI::validateIP(const string& ip) {
+    istringstream ss(ip);
+    string token;
+    int parts = 0;
+    while (getline(ss, token, '.')) {
+        parts++;
+        if (parts > 4) { cerr << "Error: too many octets.\n"; return false; }
+        int val;
+        try { val = stoi(token); }
+        catch (...) { cerr << "Error: non-numeric octet '" << token << "'\n"; return false; }
+        if (val < 0 || val > 255) {
+            cerr << "Error: octet " << val << " exceeds 0-255 range.\n";
+            return false;
+        }
+    }
+    if (parts != 4) { cerr << "Error: expected 4 octets, got " << parts << "\n"; return false; }
+    return true;
+}
+6. Data Design (File Schemas)
+The system uses two persistent files. This section defines their exact format — this is your DBMS deliverable.
+6.1 firewall.log — Traffic Event Log
+Format: CSV, append-only. One row per packet decision. Never deleted at runtime.
+Column schema:
+Column #
+Name
+Type
+Example
+1
+timestamp
+ISO 8601 string
+2025-06-01T10:30:00Z
+2
+packetID
+integer
+1042
+3
+sourceIP
+dotted-decimal string
+192.168.1.100
+4
+destIP
+dotted-decimal string
+10.0.0.1
+5
+destPort
+integer 0-65535
+22
+6
+protocol
+TCP / UDP / ICMP
+TCP
+7
+direction
+INBOUND / OUTBOUND
+INBOUND
+8
+action
+ALLOW / BLOCK / LOG_ONLY
+BLOCK
+9
+matchedRuleID
+integer or BLACKLIST/WHITELIST/DEFAULT
+BLACKLIST
+10
+threatType
+NONE / SYN_FLOOD / PORT_SCAN
+NONE
+Example rows:
+timestamp,packetID,sourceIP,destIP,destPort,protocol,direction,action,matchedRuleID,threatType
+2025-06-01T10:30:00Z,1042,192.168.1.100,10.0.0.1,22,TCP,INBOUND,BLOCK,BLACKLIST,NONE
+2025-06-01T10:30:01Z,1043,10.0.0.5,10.0.0.1,80,TCP,INBOUND,ALLOW,3,NONE
+2025-06-01T10:31:00Z,1100,203.0.113.5,10.0.0.1,22,TCP,INBOUND,BLOCK,1,SYN_FLOOD
+DBMS equivalents (for your DBMS exam):
+This CSV = a flat-file relational table named TrafficLog.
+queryByIP() = SELECT * FROM TrafficLog WHERE sourceIP = '...'
+queryByAction() = SELECT * FROM TrafficLog WHERE action = 'BLOCK'
+queryLastN() = SELECT * FROM TrafficLog WHERE timestamp > NOW() - INTERVAL N MINUTES
+Top blocked IPs = SELECT sourceIP, COUNT(*) FROM TrafficLog WHERE action='BLOCK' GROUP BY sourceIP ORDER BY COUNT(*) DESC LIMIT 5
+6.2 rules.conf — Rule Configuration File
+Format: plain text, one rule per line. Human-readable and hand-editable. Loaded on startup; overwritten on save.
+Line format:
+[ruleID] [priority] [action] [direction] [protocol] [sourceIP] [destPort] [description]
+Example rules.conf:
+# C++ Firewall Rule Configuration - auto-generated by firewall save command
+# Fields: ruleID priority action direction protocol sourceIP destPort description
+001 010 BLOCK  INBOUND  TCP  192.168.1.100  22    Block known attacker SSH
+002 020 BLOCK  BOTH     TCP  *              23    Block all Telnet
+003 030 BLOCK  INBOUND  TCP  *              3389  Block all RDP
+004 040 ALLOW  INBOUND  TCP  10.0.0.0       80    Allow internal HTTP
+005 050 BLOCK  INBOUND  ICMP *              -1    Block all ping
+DEFAULT_POLICY DENY
+Parsing rules:
+Lines starting with # are comments — skip.
+The final line DEFAULT_POLICY sets the defaultPolicy enum.
+Each rule line is split by whitespace into exactly 8 tokens.
+destPort -1 means any port (wildcard).
+sourceIP * means any source IP (wildcard).
+6.3  MongoDB Collection Schemas
+MongoDB is the primary persistence store when available. Each collection is documented below with its BSON document schema, equivalent SQL DDL, and DBMS exam notes. All collections reside in the firewall_db database.
+6.3.1  rules Collection
+Stores all firewall rules. Equivalent to the rules.conf flat file but with indexed access and atomic updates.
+Field
+BSON Type
+Description
+Example
+_id / ruleID
+int
+Unique rule identifier
+1
+priority
+int
+Lower = higher precedence
+10
+action
+string
+ALLOW / BLOCK / LOG_ONLY
+BLOCK
+direction
+string
+INBOUND / OUTBOUND / BOTH
+INBOUND
+protocol
+string
+TCP / UDP / ICMP / ANY
+TCP
+sourceIP
+string
+Dotted-decimal or * (wildcard)
+*
+destPort
+int
+0-65535 or -1 (wildcard)
+22
+description
+string
+Human-readable label
+Block SSH
+enabled
+bool
+Rule active flag
+true
+hitCount
+int
+Packets matched this rule
+0
+createdAt
+string
+ISO 8601 creation timestamp
+2025-06-01T10:00:00Z
+DBMS equivalents: SQL DDL: CREATE TABLE rules (ruleID INT PRIMARY KEY, priority INT, action VARCHAR(10), direction VARCHAR(10), protocol VARCHAR(5), sourceIP VARCHAR(18), destPort INT, description VARCHAR(100), enabled BOOL, hitCount INT); Index: db.rules.createIndex({priority:1});
+6.3.2  trafficlog Collection
+Stores every packet decision event. Equivalent to firewall.log CSV. Primary query target for all log analysis commands.
+Field
+BSON Type
+Description
+Example
+_id
+ObjectId
+Auto-assigned by MongoDB
+(auto)
+timestamp
+string
+ISO 8601 decision time
+2025-06-01T10:30:00Z
+packetID
+int
+Auto-incremented packet counter
+1042
+sourceIP
+string
+Sender IPv4 address
+192.168.1.100
+destIP
+string
+Destination IPv4 address
+10.0.0.1
+destPort
+int
+Destination port number
+22
+protocol
+string
+TCP / UDP / ICMP
+TCP
+direction
+string
+INBOUND / OUTBOUND
+INBOUND
+action
+string
+ALLOW / BLOCK / LOG_ONLY
+BLOCK
+matchedRuleID
+string/int
+Rule ID or BLACKLIST/WHITELIST/DEFAULT_POLICY
+BLACKLIST
+threatType
+string
+NONE / SYN_FLOOD / PORT_SCAN
+NONE
+Indexes: db.trafficlog.createIndex({sourceIP:1}); db.trafficlog.createIndex({timestamp:1}); db.trafficlog.createIndex({action:1}). DBMS equivalents: queryByIP() = SELECT * FROM trafficlog WHERE sourceIP=ip; queryLastN(60) = SELECT * FROM trafficlog WHERE timestamp > NOW()-INTERVAL 60 MINUTES; Top blocked IPs = SELECT sourceIP, COUNT(*) FROM trafficlog WHERE action=BLOCK GROUP BY sourceIP ORDER BY COUNT DESC LIMIT 5;
+6.3.3  blacklist Collection
+Stores blocked IP addresses. Equivalent to the BLACKLIST section of rules.conf.
+Field
+BSON Type
+Description
+Example
+_id / ip
+string
+Blocked IPv4 address (unique key)
+203.0.113.5
+reason
+string
+MANUAL or AUTO_BLOCK
+AUTO_BLOCK
+threatType
+string
+SYN_FLOOD / PORT_SCAN / NONE
+SYN_FLOOD
+blockedAt
+string
+ISO 8601 block timestamp
+2025-06-01T10:31:00Z
+detectionCount
+int
+Times this IP triggered auto-block
+3
+Index: db.blacklist.createIndex({ip:1}, {unique:true}). Load on startup: db.blacklist.find({}) then insert all IPs into in-memory HashMap.
+6.3.4  whitelist Collection
+Stores trusted IP addresses. Equivalent to the WHITELIST section of rules.conf.
+Field
+BSON Type
+Description
+Example
+_id / ip
+string
+Trusted IPv4 address (unique key)
+10.0.0.1
+addedAt
+string
+ISO 8601 timestamp of whitelist addition
+2025-06-01T09:00:00Z
+addedBy
+string
+ADMIN or SYSTEM
+ADMIN
+Index: db.whitelist.createIndex({ip:1}, {unique:true}).
+6.3.5  threats Collection
+Stores threat detection events (SYN floods and port scans). Dedicated collection enables threat-specific aggregations without filtering the full trafficlog.
+Field
+BSON Type
+Description
+Example
+_id
+ObjectId
+Auto-assigned by MongoDB
+(auto)
+ip
+string
+Attacker source IP
+203.0.113.5
+threatType
+string
+SYN_FLOOD or PORT_SCAN
+SYN_FLOOD
+timestamp
+string
+ISO 8601 detection time
+2025-06-01T10:31:00Z
+synCount
+int
+SYN packets counted in window (SYN_FLOOD)
+110
+distinctPorts
+int
+Distinct ports probed in window (PORT_SCAN)
+25
+windowSeconds
+int
+Monitoring window duration at detection
+10
+autoBlocked
+bool
+IP was auto-added to blacklist
+true
+Indexes: db.threats.createIndex({ip:1}); db.threats.createIndex({timestamp:1}). Aggregation: db.threats.aggregate([{$group:{_id:$ip,count:{$sum:1}}},{$sort:{count:-1}}]) gives repeat-attacker rankings.
+6.3.6  MongoDB ERD
+The five MongoDB collections form the following relationships:
+rules (ruleID PK) one-to-many trafficlog (matchedRuleID FK): One rule can match many log entries.
+blacklist (ip PK) logical reference to trafficlog (sourceIP): One blacklisted IP can appear in many log entries.
+threats (ip) many-to-one blacklist (ip): A detected threat IP is inserted into blacklist.
+whitelist (ip): Independent; referenced logically by trafficlog when matchedRuleID=WHITELIST.
+7. CLI Interface Design
+Complete specification of every administrator command. This is both the usability design (SE NFR-06) and the acceptance criteria reference.
+7.1 CLI Prompt and Format
+firewall> 
+The prompt is always displayed after each command completes. All output to stdout. All errors to stderr.
+7.2 Complete Command Reference
+Command syntax
+Description
+Example
+Output
+add-rule <action> <dir> <proto> <ip> <port> [priority] [desc]
+Add a new firewall rule
+add-rule BLOCK IN TCP 1.2.3.4 22 10 "block SSH"
+Rule #006 added. Priority 10.
+del-rule <ruleID>
+Delete rule by ID
+del-rule 006
+Rule #006 deleted.
+update-rule <ruleID> <newAction>
+Change rule action
+update-rule 003 ALLOW
+Rule #003 updated to ALLOW.
+list-rules
+Print all active rules in priority order
+list-rules
+Table: ID | Pri | Action | Dir | Proto | IP | Port | Hits
+block-ip <ip>
+Add IP to blacklist instantly
+block-ip 10.1.2.3
+IP 10.1.2.3 added to blacklist.
+allow-ip <ip>
+Add IP to whitelist
+allow-ip 192.168.0.1
+IP 192.168.0.1 added to whitelist.
+remove-block <ip>
+Remove from blacklist
+remove-block 10.1.2.3
+IP 10.1.2.3 removed from blacklist.
+remove-allow <ip>
+Remove from whitelist
+remove-allow 192.168.0.1
+IP 192.168.0.1 removed from whitelist.
+set-policy <DENY|ALLOW>
+Set default policy
+set-policy DENY
+Default policy set to DENY.
+show-stats
+Display runtime statistics
+show-stats
+Table of all counters.
+show-history [n]
+Show last n processed packets
+show-history 20
+Top 20 entries from Stack.
+query --ip <ip>
+Query log by source IP
+query --ip 1.2.3.4
+Matching CSV rows.
+query --action <BLOCK|ALLOW>
+Query log by action
+query --action BLOCK
+All blocked events.
+query --last <minutes>
+Query log by time window
+query --last 60
+Events in last 60 min.
+send-packet <ip> <port> <proto>
+Simulate a test packet
+send-packet 1.2.3.4 80 TCP
+Packet #1105: BLOCKED (Rule #002)
+save
+Save rules to rules.conf
+save
+Saved 12 rules to rules.conf.
+load
+Load rules from rules.conf
+load
+Loaded 12 rules from rules.conf.
+help [command]
+Show command help
+help add-rule
+Usage and parameter description.
+exit
+Shutdown firewall
+exit
+Saving rules... Goodbye.
+8. Error Handling Design
+8.1  Exception Class Hierarchy
+All exceptions inherit from FirewallException, which inherits from std::exception. This allows catch-all handlers at the top level while enabling specific handling at lower levels.
+Class hierarchy (defined in errors.h):
+std::exception
+  └── FirewallException          // base: message + component
+        ├── ValidationException  // IP/port/rule format errors
+        ├── DataStructureException // BST, HashMap, Stack, Queue errors
+        │     ├── OverflowException   // Stack/Queue full
+        │     └── UnderflowException  // pop/dequeue on empty
+        └── IOException          // file read/write failures
+              ├── FileNotFoundException
+              └── ParseException       // malformed rules.conf line
+Usage pattern in AdminCLI::dispatch():
+try {
+  engine.addRule(r);
+} catch (const ValidationException& e) {
+  cerr << "[VALIDATION] " << e.what() << endl;
+} catch (const DataStructureException& e) {
+  cerr << "[DSA ERROR] " << e.what() << endl;
+} catch (const FirewallException& e) {
+  cerr << "[ERROR] " << e.what() << endl;
+}
+8.2  Memory Ownership Table
+Defines which class is responsible for allocating and freeing each object. Prevents double-free and dangling pointer bugs.
+Object / Class
+Owner | Lifetime | Deletion Responsibility
+RuleNode (LinkedList)
+LinkedList. Lifetime: session. Deleted in LinkedList::remove() and ~LinkedList().
+BSTNode (BST)
+BST. Shares rulePtr with LinkedList node (raw pointer, not owning). BSTNode deleted in BST::remove() and ~BST(). rulePtr NOT deleted by BST.
+Rule (inside RuleNode)
+RuleNode (by value, not pointer). Lifetime: same as RuleNode. Destroyed when RuleNode deleted.
+Packet (Stack)
+Stack. Stored by value (copy). Lifetime: until overwritten or Stack destroyed.
+Packet (Queue)
+Queue. Stored by value (copy). Lifetime: until dequeued or Queue destroyed.
+HashEntry (HashMap)
+HashMap. Lifetime: until removed or HashMap destroyed. Key/value stored by value.
+FirewallState struct
+main() / RuleEngine. Passed by reference to TrafficMonitor. Lifetime: entire application.
+FileLogger (ofstream)
+FileLogger. Opens in constructor, closes in destructor. RAII pattern.
+8.3  Interface Contracts (Pre/Post-conditions)
+Formal contracts for critical public methods. Violations of pre-conditions are UB; post-conditions are guaranteed if pre-conditions hold.
+Method Signature
+Pre-condition | Post-condition
+BST::findBestMatch(Packet p)
+Pre: BST non-empty AND p.isValid()==true. Post: Returns Rule* with lowest priority int matching p, or nullptr if no match.
+BST::remove(int priority)
+Pre: priority exists in tree. Post: Node removed, BST property maintained, rulePtr NOT freed.
+HashMap::insert(string key, int val)
+Pre: key non-empty string. Post: entry stored; if load factor > 0.75, rehash performed before insert.
+Stack::push(Packet p)
+Pre: none. Post: p stored at top; if full, oldest entry overwritten (no exception thrown).
+Queue::enqueue(Packet p)
+Pre: none. Post: p added to rear; returns true if space available, false if full (no exception).
+FileLogger::saveRules()
+Pre: LinkedList non-null. Post: rules.conf written with all rules + DEFAULT_POLICY line. Returns false on I/O failure.
+TrafficMonitor::inspect(Packet p)
+Pre: p.isValid()==true. Post: synCounters and portScanSets updated; returns FLOOD/SCAN/NONE.
+RuleEngine::evaluate(Packet p)
+Pre: p.isValid()==true. Post: returns Decision with action, matchedRuleID, elapsed time in microseconds.
+All errors are handled gracefully — no crash, no undefined behaviour, always informative message.
+Error scenario
+Detection point
+Response
+Output message example
+Invalid IP address input
+AdminCLI::validateIP()
+Reject, print error, re-prompt
+Error: octet 999 exceeds 0-255 range.
+Invalid port number
+AdminCLI::validatePort()
+Reject, print error
+Error: port must be 0-65535, got '99999'.
+Duplicate rule ID
+RuleEngine::addRule()
+Auto-assign next available ID
+Warning: ID conflict, assigned #007.
+Rule not found for del/update
+RuleEngine::removeRule()
+Return false, print error
+Error: rule #099 not found.
+rules.conf missing at startup
+FileLogger::loadRules()
+Start with empty rule set, warn
+Warning: rules.conf not found. Starting with empty rule set.
+rules.conf parse error
+FileLogger::loadRules()
+Skip bad line, log warning
+Warning: skipping malformed line 5 in rules.conf.
+Log file write failure
+FileLogger::logEvent()
+Print error, continue (do not crash)
+Error: cannot write to firewall.log. Check disk space.
+Queue overflow
+Queue::enqueue()
+Drop packet, increment counter
+[Silently counted in overflowCount, visible in show-stats]
+Stack underflow (pop on empty)
+Stack::pop()
+Throw exception, catch in caller
+Error: history stack is empty.
+Queue underflow (dequeue empty)
+Queue::dequeue()
+Throw exception, catch in caller
+Error: packet queue is empty.
+BST empty, no rules loaded
+BST::findBestMatch()
+Return nullptr, apply default policy
+[Default policy applied silently]
+Malformed packet struct
+Packet::isValid()
+Return false, log as INVALID
+Warning: packet #1042 invalid — dropped.
+9. Complete C++ File Structure and Skeleton
+Every file in the project is listed below. This is your implementation roadmap — code one file at a time in the order given.
+9.1 Recommended Build Order
+Packet.h / Packet.cpp — data types first (no dependencies).
+Rule.h / Rule.cpp — depends on Packet.
+RuleNode.h — depends on Rule.
+LinkedList.h / LinkedList.cpp — depends on RuleNode.
+BST.h / BST.cpp — depends on RuleNode.
+HashMap.h / HashMap.cpp — independent (template-like, uses string keys).
+Stack.h / Stack.cpp — depends on Packet.
+Queue.h / Queue.cpp — depends on Packet.
+FirewallStats.h — plain struct, no dependencies.
+FileLogger.h / FileLogger.cpp — depends on Packet, Rule, LinkedList.
+TrafficMonitor.h / TrafficMonitor.cpp — depends on Packet, HashMap.
+RuleEngine.h / RuleEngine.cpp — depends on all data structures.
+PacketProcessor.h / PacketProcessor.cpp — depends on all above.
+AdminCLI.h / AdminCLI.cpp — depends on all above.
+PacketSimulator.h / PacketSimulator.cpp — for testing only.
+main.cpp — entry point, wires everything together.
+9.2 main.cpp skeleton
+#include "AdminCLI.h"
+#include "RuleEngine.h"
+#include "PacketProcessor.h"
+#include "TrafficMonitor.h"
+#include "FileLogger.h"
+#include "FirewallStats.h"
+#include "Stack.h"
+#include "Queue.h"
+int main() {
+    // 1. Initialise all shared components
+    FirewallStats stats;
+    FileLogger    logger("firewall.log", "rules.conf");
+    Stack         history(100);
+    Queue         packetQueue(1000);
+    TrafficMonitor monitor(100, 20, 10);  // synThresh, portThresh, windowSec
+    RuleEngine    engine;
+    // 2. Load persisted rules
+    engine.loadFromFile("rules.conf");
+    // 3. Wire up PacketProcessor with all components
+    PacketProcessor processor(engine, monitor, logger, history, packetQueue, stats);
+    // 4. Start CLI
+    AdminCLI cli(engine, processor, stats, logger);
+    cout << "Firewall started. Type 'help' for commands." << endl;
+    cli.run();  // blocks until 'exit' command
+    // 5. Shutdown
+    engine.saveToFile("rules.conf");
+    return 0;
+}
+9.3 Enumerations (enums.h)
+// enums.h — all enumerations used across the project
+#pragma once
+enum class Protocol  { TCP, UDP, ICMP, ANY };
+enum class Direction { INBOUND, OUTBOUND, BOTH };
+enum class Action    { ALLOW, BLOCK, LOG_ONLY };
+enum class ThreatType{ NONE, SYN_FLOOD, PORT_SCAN };
+// String converters (implement in enums.cpp)
+string protocolToStr(Protocol p);
+string directionToStr(Direction d);
+string actionToStr(Action a);
+string threatToStr(ThreatType t);
+Protocol  strToProtocol(const string& s);
+Direction strToDirection(const string& s);
+Action    strToAction(const string& s);
+9.4 Packet.h skeleton
+#pragma once
+#include <string>
+#include "enums.h"
+using namespace std;
+struct Packet {
+    int       packetID;
+    string    sourceIP;
+    string    destIP;
+    int       destPort;
+    Protocol  protocol;
+    Direction direction;
+    bool      isSYN;
+    int       payloadSize;
+    string    timestamp;
+    string toString() const;
+    bool   isValid()  const;
+};
+9.5 Rule.h skeleton
+#pragma once
+#include <string>
+#include "enums.h"
+#include "Packet.h"
+using namespace std;
+struct Rule {
+    int       ruleID;
+    int       priority;
+    string    sourceIP;
+    int       destPort;
+    Protocol  protocol;
+    Direction direction;
+    Action    action;
+    string    description;
+    bool      enabled;
+    int       hitCount;
+    bool   matches(const Packet& p) const;
+    string toConfigLine() const;
+    string toString() const;
+    static Rule fromConfigLine(const string& line);
+};
+9.6 Complete include dependencies diagram
+enums.h
+  └── Packet.h
+        └── Rule.h
+              └── RuleNode.h
+                    ├── LinkedList.h
+                    └── BST.h
+HashMap.h  (independent — uses <string> only)
+Stack.h    (depends on Packet.h)
+Queue.h    (depends on Packet.h)
+FirewallStats.h (independent)
+FileLogger.h   (depends on Packet, Rule, LinkedList)
+TrafficMonitor.h (depends on Packet, HashMap)
+RuleEngine.h   (depends on LinkedList, BST, HashMap, FileLogger)
+PacketProcessor.h (depends on RuleEngine, TrafficMonitor, FileLogger, Stack, Queue, FirewallStats)
+AdminCLI.h     (depends on PacketProcessor, RuleEngine, FileLogger, FirewallStats)
+main.cpp       (includes AdminCLI.h — everything else comes transitively)
+9.7  MongoDB Integration Files
+The following additional files are required for MongoDB integration. Add these to the project after Increment 4 (Persistence) is complete.
+ILogger.h — Abstract interface class. Pure virtual: logEvent(), logThreat(), queryByIP(), queryByAction(), queryLastN(). Both FileLogger and MongoLogger inherit from this.
+MongoLogger.h / MongoLogger.cpp — Full MongoDB implementation. Depends on mongocxx/bsoncxx headers. Implements all methods from Section 3.15.
+MongoConfig.h — Configuration struct: mongoURI, dbName, dualWriteMode. Parsed from command-line args in main.cpp.
+CMakeLists.txt (updated) — Add: find_package(mongocxx REQUIRED), find_package(bsoncxx REQUIRED), target_link_libraries(firewall PRIVATE mongo::mongocxx_shared).
+Updated build order (additions after FileLogger.h / FileLogger.cpp):
+ILogger.h — abstract interface (depends on Packet.h only)
+MongoLogger.h / MongoLogger.cpp — depends on ILogger.h, Packet.h, Rule.h, LinkedList.h, enums.h, and mongocxx headers
+MongoConfig.h — plain struct, no dependencies
+main.cpp (updated) — instantiate MongoLogger if MongoDB available; otherwise use FileLogger; inject via ILogger reference into PacketProcessor
+10. UML Diagram Descriptions (SE Deliverable)
+This section describes all required UML diagrams. Draw these in draw.io, StarUML, or Lucidchart using the specifications below. Each maps to a specific SE lecture.
+10.1 Use Case Diagram (SE Lecture 13)
+Actors: Administrator (human), Network (source of packets — treated as external actor).
+Administrator use cases: Add Rule, Delete Rule, Update Rule, List Rules, Block IP, Allow IP, Set Default Policy, Show Statistics, Show History, Query Logs, Save Rules, Load Rules.
+Network use cases: Send Packet (triggers the automatic pipeline — no admin involvement).
+Include relationships: Send Packet <<includes>> Evaluate Rule, Evaluate Rule <<includes>> Log Event.
+Extend relationships: Evaluate Rule <<extends>> Detect SYN Flood, Evaluate Rule <<extends>> Detect Port Scan.
+10.2 Class Diagram (SE Lecture 14)
+All classes from Section 3 of this document. Key relationships to draw:
+PacketProcessor has-a RuleEngine (composition).
+PacketProcessor has-a TrafficMonitor (composition).
+PacketProcessor has-a Stack (composition).
+PacketProcessor has-a Queue (composition).
+RuleEngine has-a LinkedList, BST, and two HashMaps (composition).
+LinkedList and BST both use RuleNode (association).
+RuleNode contains Rule (composition).
+AdminCLI depends-on PacketProcessor and RuleEngine (dependency arrow).
+Packet is passed between PacketProcessor, Stack, Queue (parameter association).
+10.3 Sequence Diagram — Packet Blocked (SE Lecture 18)
+Scenario: An inbound TCP SYN packet from a blacklisted IP arrives.
+Objects involved: :Network, :PacketProcessor, :Queue, :RuleEngine, :HashMap(blacklist), :FileLogger, :Stack.
+Sequence: Network->PacketProcessor: process(packet) | PacketProcessor->Queue: enqueue(packet) | Queue-->PacketProcessor: ok | PacketProcessor->Queue: dequeue() | Queue-->PacketProcessor: packet | PacketProcessor->RuleEngine: evaluate(packet) | RuleEngine->HashMap: contains(sourceIP) | HashMap-->RuleEngine: true (blacklisted) | RuleEngine-->PacketProcessor: BLOCK | PacketProcessor->FileLogger: logEvent(packet, BLOCK, BLACKLIST) | PacketProcessor->Stack: push(packet) | PacketProcessor-->Network: [packet dropped]
+10.4 State Machine Diagram — Packet Lifecycle (SE Lecture 13)
+States: RECEIVED → QUEUED → DEQUEUED → THREAT_CHECKED → RULE_EVALUATED → [ALLOWED | BLOCKED] → LOGGED → HISTORY.
+Transitions: RECEIVED --valid--> QUEUED, RECEIVED --invalid--> LOGGED(INVALID), QUEUED --queue full--> LOGGED(OVERFLOW), THREAT_CHECKED --threat detected--> BLOCKED, RULE_EVALUATED --match found--> action from rule, RULE_EVALUATED --no match--> default policy action.
+10.5 Activity Diagram — Add Rule Flow (SE Lecture 13)
+Start → Admin types add-rule command → AdminCLI parses tokens → validateIP() → [invalid: print error, return to start] → validatePort() → [invalid: print error, return to start] → Create Rule object → RuleEngine::addRule() → LinkedList::insert() AND BST::insert() → FileLogger note (unsaved) → Print confirmation → End.
+10.6 Component Diagram (SE Lecture 15)
+See the text diagram in Section 2.3 of this document. Components to draw: PacketSimulator, PacketProcessor, RuleEngine, TrafficMonitor, FileLogger, AdminCLI, FirewallState (central repository). Show provided/required interfaces between components as lollipop and socket notation.
+10.7 Deployment Diagram (SE Lecture 15)
+Single node: Developer Workstation (Linux or Windows). Node runs the C++ Firewall Application. Artifacts deployed on node: firewall (executable), firewall.log (CSV file), rules.conf (config file). No network deployment in this version.
+10.8 ERD — Flat-File Data Model (SE Lecture 19)
+Entity: TrafficLog (attributes: packetID PK, timestamp, sourceIP, destIP, destPort, protocol, direction, action, matchedRuleID, threatType).
+Entity: FirewallRule (attributes: ruleID PK, priority, action, direction, protocol, sourceIP, destPort, description, enabled, hitCount).
+Relationship: FirewallRule (ruleID) is referenced by TrafficLog (matchedRuleID) — one-to-many. One rule can match many log entries.
+10.9 DFD — Level 0 (Context Diagram) (SE Lecture 19)
+One central process: Firewall System. External entities: Administrator (sends commands, receives reports), Network (sends packets, receives decisions). Data flows: Administrator → commands → Firewall, Firewall → rule confirmations → Administrator, Firewall → statistics/history → Administrator, Network → packets → Firewall, Firewall → allow/block decisions → Network, Firewall → log entries → firewall.log.
+10.10 DFD — Level 1 (SE Lecture 20)
+Decompose the Firewall System into 4 processes: P1 Command Processor (handles CLI input), P2 Packet Evaluator (rule matching pipeline), P3 Threat Detector (SYN flood/port scan), P4 Logger (file I/O). Data stores: D1 Rule Set (in memory), D2 Blacklist/Whitelist (in memory), D3 Packet Queue (in memory), D4 firewall.log (file), D5 rules.conf (file).
+11. Test Plan (SE Lecture 24-25)
+11.1 Unit Tests
+Test ID
+Component
+Test case
+Expected result
+UT-01
+HashMap
+Insert and retrieve 1000 IPs
+All retrieved correctly, load factor < 0.75
+UT-02
+HashMap
+Trigger rehash at load > 0.75
+All entries preserved after rehash
+UT-03
+BST
+Insert 100 rules, find best match
+Returns highest-priority matching rule
+UT-04
+BST
+Insert in sorted order (worst case)
+Still returns correct result, height = n
+UT-05
+BST
+Delete root node
+Tree remains valid, in-order traversal correct
+UT-06
+LinkedList
+Insert and remove 50 rules
+Size correct, ordering maintained
+UT-07
+Stack
+Push 150 packets (capacity 100)
+Oldest 50 overwritten, most recent 100 preserved
+UT-08
+Queue
+Enqueue 1001 packets (capacity 1000)
+1000 processed, 1 overflow counted
+UT-09
+Rule::matches
+Wildcard IP (*)
+Matches any source IP packet
+UT-10
+Rule::matches
+Wildcard port (-1)
+Matches any destination port
+UT-11
+Packet::isValid
+IP with octet > 255
+Returns false
+UT-12
+Packet::isValid
+Port = 99999
+Returns false
+11.2 Integration Tests
+Test ID
+Modules
+Scenario
+Expected result
+IT-01
+PacketProcessor + RuleEngine
+Send packet matching Rule #002
+BLOCK returned, hitCount incremented
+IT-02
+PacketProcessor + HashMap
+Send packet from blacklisted IP
+BLOCK returned before BST lookup
+IT-03
+RuleEngine + FileLogger
+Save rules, delete all, reload
+Rule set identical to before delete
+IT-04
+TrafficMonitor + RuleEngine
+Send 110 SYN packets from one IP
+IP auto-added to blacklist, FLOOD logged
+IT-05
+AdminCLI + RuleEngine
+Type 'add-rule BLOCK IN TCP 1.2.3.4 22'
+Rule added, visible in list-rules
+IT-06
+PacketProcessor + Stack
+Process 10 packets, run show-history 5
+Most recent 5 packets displayed correctly
+11.3 Performance Tests
+Test ID
+Metric
+Test method
+Target
+PT-01
+Packet throughput
+Send 10,000 packets, measure elapsed time
+1,000+ packets/second
+PT-02
+Rule lookup latency
+1,000 rules loaded; time single evaluate()
+< 1 ms per packet
+PT-03
+HashMap lookup
+100,000 IPs; time single contains()
+< 0.1 ms
+PT-04
+Memory usage
+10,000 rules + 100,000 blacklist IPs
+< 50 MB RAM
+PT-05
+Log write speed
+Write 100,000 log entries
+< 5 seconds total
+12. Information Security Mapping
+This section maps the firewall design to InfoSec concepts — your fourth subject integration.
+12.1 CIA Triad Mapping
+CIA Pillar
+How this firewall implements it
+Relevant components
+Confidentiality
+Blocking unauthorised access to services (SSH port 22, RDP port 3389) ensures internal data cannot be reached by external attackers.
+Blacklist HashMap, Rule engine, Default-deny policy
+Integrity
+Preventing IP spoofing (blocking known malicious ranges) and SYN flood attacks protects server state from being corrupted by overwhelming connections.
+TrafficMonitor, SYN flood detection, Auto-blacklist
+Availability
+Default-deny policy with whitelisting ensures legitimate traffic always gets through. Queue-based buffering prevents traffic loss during burst periods.
+Queue buffer, Whitelist HashMap, Queue overflow handling
+12.2 Attack Pattern Coverage
+Attack
+Description
+Firewall response
+Relevant requirement
+SYN Flood
+Attacker sends thousands of TCP SYN packets to exhaust server connection table.
+TrafficMonitor detects >100 SYN/sec from one IP, auto-blacklists it.
+FR-14
+Port Scan
+Attacker probes many ports to discover open services.
+TrafficMonitor detects >20 distinct ports in 10 sec, auto-blacklists.
+FR-15
+IP Spoofing
+Attacker fakes a trusted source IP.
+Whitelist checked first; spoofed IP not on whitelist, falls through to rules.
+FR-09, FR-01
+Brute Force SSH
+Repeated connection attempts to port 22.
+Rule BLOCK IN TCP * 22 blocks all external SSH.
+FR-02, FR-03
+Telnet (plaintext)
+Use of insecure Telnet protocol.
+Rule BLOCK BOTH TCP * 23 prevents all Telnet.
+FR-02
+12.3 Firewall Type Classification
+This firewall implements:
+Packet filtering firewall (Layer 3/4) — inspects IP header, port, protocol. This is the fundamental firewall type.
+Stateless inspection — each packet evaluated independently (no TCP connection state tracking).
+It does NOT implement (known gaps documented in SRS):
+Stateful inspection — would require tracking TCP connection state across packets (SYN, SYN-ACK, ACK).
+Deep Packet Inspection (DPI) — would require inspecting payload content.
+Application-layer filtering — would require understanding HTTP, DNS, etc.
+13. Incremental Development Plan
+NOTE — INCREMENT 5 vs GUI CLARIFICATION: The SRS Module 6 (GUI Dashboard) references Increment 5 in some places. The correct assignment is: Increment 5 = Threat Detection (this document, above). The GUI Dashboard is Increment 6 (future/optional). The engine is MVC-ready (Section 2.4) to support a GUI without modifying the core RuleEngine or PacketProcessor. Both documents have been updated to reflect this. All GUI FRs in the SRS are labeled <<planned>>.
+The project is built in 5 increments. Each increment is a standalone working system. This directly implements the Incremental Process Model (SE Lecture 2, Pressman Ch2).
+Increment
+Deliverable
+Data structures used
+SE milestone
+1 — Core Engine
+Packet struct, Rule struct, LinkedList, basic rule matching CLI commands: add-rule, del-rule, list-rules, send-packet
+LinkedList for rules
+Requirements baseline complete
+2 — Fast Lookup
+BST added to RuleEngine. HashMap added for blacklist/whitelist. O(log n) evaluate() working. CLI: block-ip, allow-ip, set-policy
+LinkedList + BST + HashMap
+Architecture diagram complete
+3 — Buffers & History
+Stack added for show-history. Queue added for packet buffering. Overflow handling. CLI: show-history, show-stats
+All 5 structures active
+Class diagram and sequence diagram complete
+4 — Persistence & Logging
+FileLogger: CSV log writing, rules.conf save/load, query commands. CLI: save, load, query
+File I/O layer complete
+Component diagram, ERD, DFD complete
+5 — Threat Detection
+TrafficMonitor: SYN flood detection, port scan detection, auto-blacklisting. Full test suite.
+All structures + monitoring
+Test plan complete, full SDS submitted
+13.1 Gantt Chart (Textual)
+Task
+Week 1
+Week 2
+Week 3
+Week 4
+Increment 1: Core Engine
+▓▓▓▓▓▓▓▓
+Increment 2: Fast Lookup
+▓▓▓▓▓▓▓▓
+Increment 3: Buffers & History
+▓▓▓▓
+Increment 4: Persistence
+▓▓▓▓
+Increment 5: Threat Detection
+▓▓▓▓
+SE Documentation (ongoing)
+▓▓▓▓
+▓▓▓▓
+▓▓▓▓
+▓▓▓▓
+Testing (per increment)
+▓▓
+▓▓▓▓
+▓▓▓▓
+▓▓▓▓
+11.6  Requirements Traceability Matrix — SDS to SRS
+The following matrix maps SDS design decisions to SRS requirements, demonstrating full vertical traceability (SRS FR -> SDS Design -> Test Case). This satisfies SE CLO-4.
+SRS FR (Global ID)
+SDS Design Element | Test Case ID
+GFR-001 (IP blacklist O(1))
+SDS Sec 4: HashMap blacklist with djb2 hash | UT-01, PT-02
+GFR-002 (Port/protocol filter)
+SDS Sec 4: Rule::matches() with destPort=-1 wildcard | UT-09, UT-10
+GFR-003 (DEFAULT_DENY)
+SDS Sec 3: FirewallState.defaultPolicy initialized to DENY | IT-07
+GFR-008 (Whitelist priority)
+SDS Sec 5.1: Stage 2 whitelist check before Stage 3 BST | IT-08
+GFR-009 (Blacklist before BST)
+SDS Sec 5.1: Stage 1 blacklist check before Stage 3 BST | IT-02
+GFR-016 (10-stage pipeline)
+SDS Sec 5.2: PacketProcessor::process() 10-stage pseudocode | IT-01
+GFR-028 (BST in-order match)
+SDS Sec 4: BST::findBestMatch() in-order traversal | UT-03
+GFR-031 (add-rule dual insert)
+SDS Sec 4: RuleEngine::addRule() inserts into LinkedList + BST | IT-05
+GFR-032 (del-rule dual remove)
+SDS Sec 4: RuleEngine::removeRule() removes from LinkedList + BST | UT-06
+GFR-060 (BST inorder-successor delete)
+SDS Sec 5.7: BST::findInOrderSuccessor() pseudocode | UT-05
+GFR-061 (CSV log per decision)
+SDS Sec 6: FileLogger::log() appends 10-field CSV row | IT-06
+GFR-066 (Stack LIFO history)
+SDS Sec 4: Stack circular push with overwrite | UT-07
+GFR-069 (Queue FIFO buffer)
+SDS Sec 4: CircularQueue::enqueue() returns false on full | UT-08
+GFR-091 (SYN flood)
+SDS Sec 5.4: TrafficMonitor::inspect() synCounters HashMap | IT-04
+GFR-095 (Port scan)
+SDS Sec 5.8: TrafficMonitor::countDistinctPorts() | IT-04b
+11.7  Concurrency and Threading Model
+This system is explicitly single-threaded. The following design decisions document threading assumptions to prevent future concurrency bugs.
+Component
+Threading Assumption
+AdminCLI + PacketProcessor
+Run sequentially in a single thread. CLI blocks on getline(). No concurrent packet arrival during CLI input.
+FirewallStats struct
+Read and written only by PacketProcessor and TrafficMonitor in the same thread. No mutex needed.
+HashMap (blacklist/whitelist)
+Accessed only by RuleEngine::evaluate() (read) and AdminCLI (write). No concurrent access. No locking needed.
+Stack (history)
+Accessed only by PacketProcessor::process() (write) and AdminCLI (read). Sequential. No locking needed.
+FileLogger (ofstream)
+Opened once, written by PacketProcessor, closed on exit. No concurrent writes. RAII guarantees close.
+Future multi-thread note
+If a producer-consumer model is added (e.g., separate packet capture thread), ALL shared structures (HashMap, Stack, Queue) must be wrapped with std::mutex. Design is isolation-ready.
+Appendix A — Cross-Subject Mapping Summary
+SDS Section
+DSA subject
+SE subject
+DBMS subject
+InfoSec subject
+Sec 3-4 (Classes + DS)
+All 5 data structures in detail
+Class diagram (Lec 14)
+—
+—
+Sec 5 (Algorithms)
+evaluate(), SYN flood algorithm
+Activity diagram (Lec 13)
+—
+Threat detection
+Sec 6 (File schemas)
+—
+ERD, DFD (Lec 19-20)
+Flat-file DB, SQL equivalents
+Log integrity (CIA)
+Sec 7 (CLI design)
+—
+Use Case diagram (Lec 13)
+—
+Admin access control
+Sec 9 (Code skeleton)
+Implementation guide
+Component diagram (Lec 15)
+—
+—
+Sec 10 (UML diagrams)
+—
+All SE CLO-3 diagrams
+ERD
+—
+Sec 11 (Test plan)
+Complexity analysis
+SE CLO-4 testing
+—
+Security testing
+Sec 12 (InfoSec)
+—
+Security requirements NFR-03
+—
+CIA Triad, attack patterns
+Sec 13 (Increments)
+—
+SE Lec 2 Incremental model
+—
+—
+13.5  Risk Assessment and Mitigation
+The following risks are specific to the design decisions documented in this SDS. Each is assessed for probability and has a defined mitigation.
+Risk ID | Description
+Probability | Mitigation
+RISK-01: BST O(n) degeneration — rules inserted in sorted priority order
+Probability: Medium. Mitigation: Insert rules in random/varied order during tests. Note AVL self-balancing as a planned enhancement in viva. Current worst-case O(n) is acceptable for < 1,000 rules.
+RISK-02: HashMap collision storm — many IPs share the same djb2 bucket
+Probability: Low. Mitigation: djb2 is proven for string distribution. Rehash triggered at load factor 0.75. Monitor loadFactor() via show-stats in production.
+RISK-03: Stack circular overwrite — history lost in high-traffic burst
+Probability: Medium. Mitigation: MAX_HISTORY is a compile-time constant — increase before high-volume test. Document the bounded-history trade-off in system documentation.
+RISK-04: rules.conf parse failure corrupts loaded rule set
+Probability: Low. Mitigation: Parser skips malformed lines with stderr warning. Validate loaded rule count equals saved count. Atomic write (write to temp file then rename) is future enhancement.
+RISK-05: SYN threshold false positives on legitimate high-SYN traffic
+Probability: Medium. Mitigation: Default threshold=100 is conservative. set-threshold command allows runtime tuning without restart. Document recommended values.
+RISK-06: Memory leak in dual-structure node deletion
+Probability: Low. Mitigation: BSTNode stores rulePtr as non-owning pointer. Only LinkedList::remove() frees the Rule/RuleNode. Unit test UT-06 verifies size after 50 removals.
+RISK-07: FileLogger ofstream left open on abnormal exit
+Probability: Low. Mitigation: RAII destructor closes stream. Signal handler (SIGINT) calls logger.close() before exit to flush pending writes.
+Appendix B — Quick Viva Reference
+If asked in the DSA viva: Why did you use a BST for rule storage? Answer: Rules need to be evaluated in priority order for every packet. A BST gives O(log n) ordered access, compared to O(n) for a LinkedList scan. The BST's in-order traversal naturally gives rules from highest to lowest priority.
+If asked: Why HashMap for the blacklist? Answer: The blacklist is checked on every single packet before any rule evaluation. It needs O(1) average-case lookup to avoid being the performance bottleneck.
+If asked: Why Stack for history? Answer: Administrators ask to see the LAST N events — this is a LIFO access pattern. A Stack is the correct structure. Circular array implementation avoids memory allocation overhead.
+If asked: Why Queue for packet buffering? Answer: Packets must be processed in arrival order — FIFO. When processing is slower than arrival (burst), a Queue buffers them without losing order.
+If asked: Why LinkedList at all, given BST? Answer: The LinkedList is the canonical ordered list for display and serialisation. When saving rules to file, you need sequential access. The BST is optimised for search, not sequential output.

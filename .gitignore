@@ -1,0 +1,6 @@
+build/
+CMakeFiles/
+*.log
+imgui.ini
+.vscode/
+*.cmake
