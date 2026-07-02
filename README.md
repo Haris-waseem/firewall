@@ -103,7 +103,7 @@ Terminal/
 |-----------|----------|-------|
 | C++17 compiler (MSVC / GCC / Clang) | ✅ Yes | |
 | CMake 3.15+ | ✅ Yes | |
-| OpenGL | ✅ Yes | Comes with GPU drivers |
+| OpenGL | ✅ Yes | Comes with GPU drivers — no separate install |
 | GLFW3 | ✅ Yes | Bundled in `third_party/` — no separate install needed for MSVC |
 | Dear ImGui + ImPlot | ✅ Yes | Vendored in `third_party/` — compiled automatically |
 | MongoDB + mongocxx drivers | ⚙️ Optional | Only needed if building with `-DWITH_MONGODB=ON`; app falls back to CSV otherwise |
@@ -139,9 +139,27 @@ g++ -std=c++17 src/*.cpp -Iinclude -o Firewall.exe
 
 ---
 
+## ▶️ Running
+
+### GUI Mode (Default)
+```bash
+./Firewall
+```
+Launches the full Dear ImGui dashboard with all 7 panels (Dashboard, Rules, Blacklist, Traffic, Threats, Logs, Settings).
+
+### CLI Mode
+```bash
+./Firewall --cli
+```
+Launches the interactive `firewall>` REPL shell only, with no GUI window.
+
+> **Note:** If the GUI fails to initialize (e.g. missing OpenGL context), the app automatically falls back to CLI mode so it's never left without a usable interface.
+
+---
+
 ## 🎮 Admin CLI — Command Reference
 
-Once running, the `firewall> ` prompt accepts:
+Available in CLI mode (`--cli`) or via the Terminal panel inside the GUI:
 
 ### Rule Management
 ```
