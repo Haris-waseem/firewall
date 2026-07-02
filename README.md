@@ -1,194 +1,191 @@
-# C++ Packet Filtering Firewall — DSA Major Project
+# Terminal — Packet Filtering Firewall Simulator
 
-An advanced, production-grade command-line **Packet Filtering Firewall and Traffic Monitor** built entirely from scratch in C++. 
+A fully functional, GUI-based **packet filtering firewall simulator** built from scratch in C++17. Simulates real-world firewall behavior including multi-stage packet inspection, real-time threat detection, an interactive admin CLI, and a dual persistence layer — all visualized through a live Dear ImGui dashboard.
 
-This project simulates network packet inspection using **5 custom data structures** (implemented without using STL container classes like `std::list`, `std::map`, `std::stack`, or `std::queue` for core operations), detects anomaly threats in real-time (SYN flooding and port scanning), and persists firewall logs/rules utilizing flat-file CSV and a gracefully-degrading **MongoDB backend**.
-
----
-
-## 🚀 Key Features
-
-*   **Custom Data Structures (No STL)**: Handcrafted memory-efficient implementations of **LinkedList**, **Binary Search Tree (BST)**, **HashMap**, **Stack**, and **Queue**.
-*   **Dual Matching Engine**:
-    *   **O(1) Fast Checks**: Whitelist and Blacklist IP tables powered by custom HashMaps.
-    *   **O(log n) Rule Matching**: Binary Search Tree indexed by rule priority (lower priority number = higher precedence) to find the highest-priority rule match efficiently.
-*   **Real-time Threat Monitoring**:
-    *   **SYN Flood Detection**: Tracks TCP SYN packets from a source IP in a sliding time-window to detect and block denial-of-service attempts.
-    *   **Port Scan Detection**: Detects horizontal scanning by counting distinct target ports probed by a single source IP in a sliding time-window.
-*   **Polished Admin CLI REPL**: An interactive command-line interface shell with a gorgeous command dashboard, rule editor, stat inspector, packet injector, and historical query system.
-*   **Dual Persistence Layer**:
-    *   **Flat-file Logger**: Appends CSV log entries and saves rule sets to a structured `rules.conf` configuration file.
-    *   **MongoDB Connector**: Upserts records and logs to MongoDB. Gracefully degrades to stub operations without compile-time errors if MongoDB drivers are missing.
+> Built as a major systems project at COMSATS University Islamabad, demonstrating applied data structures, network security concepts, and C++ systems programming.
 
 ---
 
-## 🏛️ Project Architecture & Data Flow
+## 📸 Screenshots
 
-The firewall is designed around a decoupled Model-View-Controller (MVC) architecture:
-*   **Model**: Core data structures, `Packet`, `Rule`, `RuleNode`, and `FirewallStats`.
-*   **View**: Formatted output screens, stat summaries, and logs.
-*   **Controller**: `AdminCLI`, which handles parsing, command routing, and input validation.
+> *(Add screenshots of your GUI panels here once you have them — Dashboard, Threats, Logs, etc.)*
 
-### Packet Inspection Pipeline Sequence
+---
+
+## ✨ Key Features
+
+- **Real-time GUI Dashboard** — 7 dedicated panels built with Dear ImGui and ImPlot: Dashboard, Rules, Blacklist, Traffic, Threats, Logs, and Settings
+- **Multi-stage Packet Inspection Pipeline** — whitelist/blacklist O(1) hash lookups → BST O(log n) rule matching → configurable default policy fallback
+- **Real-time Threat Detection** — sliding time-window algorithms detect SYN flood attacks and port scanning activity automatically
+- **Admin REPL CLI** — interactive `firewall>` shell with 20+ commands for live rule management, IP control, packet injection, and log querying
+- **Dual Persistence Layer** — MongoDB C++ driver (mongocxx/bsoncxx) with automatic fallback to flat-file CSV logging when MongoDB is unavailable
+- **5 Custom Data Structures** — LinkedList, BST, HashMap, Stack, Queue implemented from scratch with no STL container substitutions
+
+---
+
+## 🏗️ Project Structure
+
+```
+Terminal/
+├── src/                    # Core backend logic
+│   ├── main.cpp
+│   ├── RuleEngine.cpp      # Multi-stage packet evaluation pipeline
+│   ├── TrafficMonitor.cpp  # SYN flood & port scan detection
+│   ├── AdminCLI.cpp        # Interactive REPL shell
+│   ├── PacketProcessor.cpp
+│   ├── PacketSimulator.cpp
+│   ├── MongoLogger.cpp     # MongoDB persistence layer
+│   ├── FileLogger.cpp      # Flat-file CSV fallback logger
+│   └── ...                 # LinkedList, BST, HashMap, Stack, Queue
+├── include/                # Header files
+├── gui/                    # Dear ImGui GUI layer
+│   ├── FirewallGUI.cpp
+│   ├── TerminalPanel.cpp
+│   └── panels/             # Dashboard, Rules, Blacklist, Traffic, Threats, Logs, Settings
+├── third_party/            # Vendored ImGui 1.92.8 and ImPlot 1.0
+├── fonts/                  # UI fonts (Inter, JetBrains Mono, Font Awesome)
+├── rules.conf              # Firewall rules configuration file
+├── CMakeLists.txt
+└── build.bat               # Windows one-click build script (MSVC)
+```
+
+---
+
+## 🔍 Packet Inspection Pipeline
 
 ```
 [ Incoming Packet ]
        │
        ▼
- 1. Validation ───────► (Invalid Format?) ───────► [ BLOCK & Log Code -4 ]
+ 1. Validation ───────────► (Invalid?) ──────────► [ BLOCK — Code -4 ]
        │
        ▼
- 2. Queue Buffer ─────► (Queue Full Overflow?) ──► [ BLOCK & Log Code -5 ]
+ 2. Queue Buffer ──────────► (Overflow?) ─────────► [ BLOCK — Code -5 ]
        │
        ▼
- 3. Threat Monitor ───► (SYN Flood / Port Scan?) ──► [ Blacklist IP & Alert ]
+ 3. Threat Monitor ────────► (SYN Flood / Port Scan?) ─► [ Blacklist IP & Alert ]
        │
        ▼
- 4. O(1) Whitelist ───► (Whitelisted Source IP?) ──► [ ALLOW & Log Code -1 ]
+ 4. O(1) Whitelist ────────► (Whitelisted?) ──────► [ ALLOW — Code -1 ]
        │
        ▼
- 5. O(1) Blacklist ───► (Blacklisted Source IP?) ──► [ BLOCK & Log Code -2 ]
+ 5. O(1) Blacklist ────────► (Blacklisted?) ──────► [ BLOCK — Code -2 ]
        │
        ▼
- 6. O(log n) BST Match ─► (Found Matching Rule?) ───► [ Rule Action Decision ]
+ 6. O(log n) BST Match ────► (Rule matched?) ─────► [ Rule Action Decision ]
        │                                                      │
-       ▼ (No Match)                                           ▼
- 7. Default Policy ──────────────────────────────────► [ BLOCK / ALLOW ]
+       ▼ (No match)                                           ▼
+ 7. Default Policy ───────────────────────────────► [ ALLOW / BLOCK ]
        │
        ▼
- [ Log CSV & MongoDB ] ───► [ Push to LIFO History Stack ]
+ [ Log to CSV / MongoDB ] ──► [ Push to History Stack ]
 ```
 
 ---
 
-## 📊 Detail Analysis of Custom Data Structures
+## 📊 Custom Data Structures
 
-### 1. Singly-Linked List (`LinkedList.h`)
-*   **Purpose**: Manages active rules in insertion/ID sorted order. Used to save config sets, display rule tables sequentially, and load items in bulk.
-*   **Complexity**:
-    *   **Sorted Insertion (`insertSorted`)**: $O(n)$ linear scan to maintain ascending priority sequence.
-    *   **Removal (`remove`)**: $O(n)$ search and pointer rewrite.
-    *   **Lookup (`find`)**: $O(n)$ sequential search.
-*   **Memory Management**: Deconstructs dynamically. Loops through nodes deleting `RuleNode` memory to prevent leaks.
-
-### 2. Binary Search Tree (`BST.h`)
-*   **Purpose**: Stores rules keyed on `Rule::priority`. Performs O(log n) packet evaluations.
-*   **Algorithm (`findBestMatch`)**: Traverses in-order (left-root-right) looking for rules matching the incoming packet. Because left subtrees contain lower priority numbers (higher precedence), the first match encountered is guaranteed to be the highest-precedence rule.
-*   **Complexity**:
-    *   **Insertion (`insert`)**: $O(\log n)$ average | $O(n)$ degenerate (unbalanced skewed line).
-    *   **Match Evaluation**: $O(\log n)$ average | $O(n)$ worst.
-
-### 3. Hash Map (`HashMap.h`)
-*   **Purpose**: Handles O(1) IP address whitelist/blacklist matches and sliding window SYN/port-scan counters.
-*   **Design**:
-    *   **Hash Function**: Dan Bernstein's `djb2` string hash algorithm (constant multiplier 33 and initial hash 5381), which yields an exceptionally uniform distribution for IP address strings.
-    *   **Collision Resolution**: Separate Chaining using `std::list` buckets.
-    *   **Dynamic Rehash**: Automatically doubles the bucket count and re-inserts all keys when the load factor exceeds `0.75` to keep lookups at $O(1)$.
-
-### 4. Stack (`Stack.h`)
-*   **Purpose**: Sliding log history archiving (Last-In-First-Out).
-*   **Design**: A fixed-capacity circular array index buffer of size `100`. When a push operation occurs on a full stack, it loops back and overwrites the oldest element without shifting memory (O(1)).
-*   **Complexity**:
-    *   **Push / Pop / Peek**: $O(1)$ constant time.
-    *   **Display (`printTop`)**: $O(n)$ loop using modular index step-back math: `idx = (top - i + capacity) % capacity`.
-
-### 5. Queue (`Queue.h`)
-*   **Purpose**: Processing buffer for network packet ingestion (First-In-First-Out).
-*   **Design**: A fixed-capacity circular array using `front_`, `rear_`, and `count_` index pointers.
-*   **Complexity**:
-    *   **Enqueue / Dequeue**: $O(1)$ operations.
-    *   **Safety**: Tracks overflows via an internal counter if incoming packet spikes exceed capacity.
+| Structure | Purpose | Key Complexity |
+|-----------|---------|----------------|
+| **LinkedList** | Stores active rules in sorted order; used for config save/load | Insert O(n), Lookup O(n) |
+| **BST** | Priority-indexed rule matching during packet evaluation | Match O(log n) avg |
+| **HashMap** | Whitelist/blacklist O(1) IP lookups; sliding window threat counters (djb2 hash, separate chaining, rehash at 0.75 load) | Lookup O(1) |
+| **Stack** | Circular LIFO history buffer (capacity 100, overwrites oldest on full) | Push/Pop O(1) |
+| **Queue** | Circular FIFO packet ingestion buffer with overflow tracking | Enqueue/Dequeue O(1) |
 
 ---
 
-## 🛠️ Compilation & Execution Guide
+## 🛠️ Build & Run
 
-The project is fully compatible with any modern C++17 compiler (GCC, Clang, or MSVC) and is configured to compile out-of-the-box using **CMake**.
+### Requirements
 
-### Option A: Building with CMake (Recommended)
+| Dependency | Required | Notes |
+|-----------|----------|-------|
+| C++17 compiler (MSVC / GCC / Clang) | ✅ Yes | |
+| CMake 3.15+ | ✅ Yes | |
+| OpenGL | ✅ Yes | Comes with GPU drivers |
+| GLFW3 | ✅ Yes | Bundled in `third_party/` — no separate install needed for MSVC |
+| Dear ImGui + ImPlot | ✅ Yes | Vendored in `third_party/` — compiled automatically |
+| MongoDB + mongocxx drivers | ⚙️ Optional | Only needed if building with `-DWITH_MONGODB=ON`; app falls back to CSV otherwise |
 
-1.  Open your terminal in the project directory.
-2.  Create a build directory:
-    ```powershell
-    mkdir build
-    cd build
-    ```
-3.  Configure with CMake:
-    *   **Flat-file csv persistence mode (Default)**:
-        ```powershell
-        cmake ..
-        ```
-    *   **MongoDB database integration mode** (requires `mongocxx` installed):
-        ```powershell
-        cmake -DWITH_MONGODB=ON ..
-        ```
-4.  Compile the source:
-    ```powershell
-    cmake --build . --config Release
-    ```
-5.  Run the executable:
-    ```powershell
-    ./Firewall
-    ```
+### Option A: Windows One-Click (MSVC)
 
-### Option B: Compiling Directly with GCC/G++
+Requires Visual Studio Build Tools installed.
 
-If you do not have CMake, you can compile all source files directly using standard G++:
-```powershell
+```bat
+build.bat
+```
+
+### Option B: CMake (Cross-platform)
+
+```bash
+mkdir build && cd build
+
+# Default build (flat-file CSV persistence)
+cmake ..
+cmake --build . --config Release
+
+# Optional: enable MongoDB persistence
+cmake -DWITH_MONGODB=ON ..
+cmake --build . --config Release
+```
+
+### Option C: Direct GCC (no CMake)
+
+```bash
 g++ -std=c++17 src/*.cpp -Iinclude -o Firewall.exe
 ./Firewall.exe
 ```
 
 ---
 
-## 🎮 Admin CLI Commands Reference
+## 🎮 Admin CLI — Command Reference
 
-Once running, the interactive prompt `firewall> ` will accept administrative operations:
+Once running, the `firewall> ` prompt accepts:
 
-### 1. Rule Management
-*   `add-rule <action> <dir> <proto> <ip> <port> [priority] [desc]`
-    *   **Example**: `add-rule BLOCK INBOUND TCP 192.168.1.150 22 10 Block SSH connection`
-*   `del-rule <ruleID>`
-    *   **Example**: `del-rule 3`
-*   `update-rule <ruleID> <ALLOW|BLOCK|LOG_ONLY>`
-    *   **Example**: `update-rule 1 ALLOW`
-*   `enable-rule <ruleID>` / `disable-rule <ruleID>`
-*   `list-rules` (Prints a beautiful formatted rules table)
-*   `flush-rules` (Cleans ruleset, whitelist, and blacklist completely)
+### Rule Management
+```
+add-rule <action> <dir> <proto> <ip> <port> [priority] [desc]
+del-rule <ruleID>
+update-rule <ruleID> <ALLOW|BLOCK|LOG_ONLY>
+enable-rule <ruleID> / disable-rule <ruleID>
+list-rules
+flush-rules
+```
 
-### 2. IP Whitelists & Blacklists
-*   `block-ip <ip>`: Explicitly blacklists an IP address (O(1) block).
-*   `allow-ip <ip>`: Explicitly whitelists an IP address (O(1) pass).
-*   `remove-block <ip>` / `remove-allow <ip>`
-*   `set-policy <ALLOW|BLOCK>`: Changes default policy action when no rules match.
+### IP Control
+```
+block-ip <ip>        # O(1) blacklist
+allow-ip <ip>        # O(1) whitelist
+remove-block <ip>    # Remove from blacklist
+remove-allow <ip>    # Remove from whitelist
+set-policy <ALLOW|BLOCK>
+```
 
-### 3. Monitoring & Simulation
-*   `show-stats`: Displays a clean, double-lined boxed summary of processed, blocked, logged, and overflow packet counters.
-*   `show-history [n]`: Shows the last $N$ packets popped from the circular stack history.
-*   `send-packet <srcIP> <destPort> <proto> [dir] [isSYN]`
-    *   *Inject a normal packet*: `send-packet 192.168.1.50 80 TCP`
-    *   *Simulate SYN flood attack*: Inject multiple SYN packets rapidly: `send-packet 10.0.0.99 443 TCP INBOUND SYN`
-*   `set-threshold <syn|portscan|window> <value>`: Sets threat metrics.
-*   `reset-threats`: Resets current sliding threat window.
+### Monitoring & Simulation
+```
+show-stats
+show-history [n]
+send-packet <srcIP> <destPort> <proto> [dir] [isSYN]
+set-threshold <syn|portscan|window> <value>
+reset-threats
+```
 
-### 4. Persistence & Log Queries
-*   `query --ip <ip>`: Performs log search for a specific source IP.
-*   `query --action <ALLOW|BLOCK>`: Searches logs based on decision.
-*   `query --last <minutes>`: Displays log lines logged in the past $N$ minutes.
-*   `save`: Forces manual config commit to `rules.conf`.
-*   `load`: Reloads rule, whitelist, blacklist tables from `rules.conf`.
-*   `exit`: Commits active firewall configuration and closes REPL.
+### Persistence & Queries
+```
+query --ip <ip>
+query --action <ALLOW|BLOCK>
+query --last <minutes>
+save / load
+exit
+```
 
 ---
 
-## 🗄️ Persistence File Layout
+## 🗄️ Persistence Format
 
-### Configuration File (`rules.conf`)
-Rules are saved under distinct brackets in a structured format:
+**`rules.conf`**
 ```ini
-# Rules Configuration File
-# Automatically generated by Firewall System
-
 [RULES]
 001 010 ALLOW BOTH ANY 192.168.1.100 -1 Whitelist Admin Machine
 002 100 BLOCK BOTH ANY * 23 Block Telnet Port
@@ -196,28 +193,19 @@ DEFAULT_POLICY BLOCK
 
 [BLACKLIST]
 192.168.1.99
-192.168.1.200
 
 [WHITELIST]
 10.0.0.5
 ```
 
-### Log File (`firewall.log`)
-Appends events in standard 10-field CSV logs for parsing and queries:
-```csv
+**`firewall.log`** (CSV)
+```
 2026-05-31T13:09:20Z,1,192.168.1.100,10.0.0.1,80,TCP,INBOUND,ALLOW,-1,NONE
-2026-05-31T13:09:25Z,2,192.168.1.99,10.0.0.1,23,TCP,INBOUND,BLOCK,-2,NONE
 2026-05-31T13:09:30Z,-1,10.0.0.99,*,0,TCP,INBOUND,BLOCK,-2,SYN_FLOOD
 ```
 
 ---
 
-## 🎓 DSA Viva Performance Analysis
+## 📄 License
 
-For university major project defenses (such as viva sessions), this project demonstrates excellent algorithmic selections:
-1.  **Why use a BST for rules instead of a LinkedList?**
-    *   Evaluating rules in a LinkedList is $O(n)$ in the worst case. In a balanced BST, it scales at $O(\log n)$, reducing CPU cycles during high-traffic packet streams.
-2.  **Why use separate chaining instead of open addressing in the HashMap?**
-    *   Separate chaining with rehashing maintains robust $O(1)$ lookups even under clustered IP network segments, eliminating collision cascading.
-3.  **Why circular arrays for Stack/Queue?**
-    *   Circular buffers prevent continuous dynamic memory allocations/deallocations, eliminating memory fragmentation and guaranteeing $O(1)$ push/pop boundaries.
+This project is for educational and portfolio purposes.
